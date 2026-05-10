@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
   Rocket, Inbox, Users, BarChart3, Bot, Megaphone, Sparkles, Send, Plus, Trash2,
-  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight
+  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, Copy, ExternalLink
 } from 'lucide-react'
 
 const NAV = [
@@ -22,6 +22,7 @@ const NAV = [
   { id: 'simulator', label: 'IG Simulator', icon: Instagram },
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'leads', label: 'Leads (CRM)', icon: Users },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 const STAGES = ['new', 'interested', 'qualified', 'negotiation', 'converted', 'lost']
@@ -36,18 +37,106 @@ const STAGE_COLORS = {
 
 function api(path, opts = {}) {
   return fetch(`/api${path}`, {
+    credentials: 'include',
     ...opts,
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
   }).then(async r => {
     const j = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(j.error || 'request failed')
+    if (!r.ok) {
+      const err = new Error(j.error || 'request failed')
+      err.status = r.status
+      throw err
+    }
     return j
   })
+}
+
+function AuthScreen({ onAuthed }) {
+  const [mode, setMode] = useState('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [businessName, setBusinessName] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const path = mode === 'signup' ? '/auth/signup' : '/auth/login'
+      const body = mode === 'signup'
+        ? { email, password, name, business_name: businessName }
+        : { email, password }
+      const u = await api(path, { method: 'POST', body: JSON.stringify(body) })
+      toast.success(mode === 'signup' ? 'Welcome to ReplyRocket! 🚀' : 'Welcome back!')
+      onAuthed(u)
+    } catch (e) {
+      toast.error(e.message)
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-violet-600 via-fuchsia-500 to-pink-500 flex items-center justify-center p-4">
+      <Card className="w-full max-w-md border-0 shadow-2xl">
+        <CardContent className="p-8">
+          <div className="flex items-center gap-2 mb-6">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 flex items-center justify-center shadow-lg">
+              <Rocket className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <div className="font-bold text-xl text-slate-900">ReplyRocket</div>
+              <div className="text-xs text-slate-500 -mt-0.5">AI Revenue Engine</div>
+            </div>
+          </div>
+          <h1 className="text-2xl font-extrabold text-slate-900 mb-1">{mode === 'signup' ? 'Create your account' : 'Welcome back'}</h1>
+          <p className="text-slate-500 text-sm mb-6">{mode === 'signup' ? 'Spin up your AI sales agent in 30 seconds.' : 'Log in to your dashboard.'}</p>
+          <form onSubmit={submit} className="space-y-3">
+            {mode === 'signup' && (
+              <>
+                <Field label="Your name"><Input value={name} onChange={e => setName(e.target.value)} required /></Field>
+                <Field label="Business name"><Input value={businessName} onChange={e => setBusinessName(e.target.value)} placeholder="e.g. Pawsome Pet Salon" required /></Field>
+              </>
+            )}
+            <Field label="Email"><Input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></Field>
+            <Field label="Password"><Input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={6} /></Field>
+            <Button type="submit" disabled={busy} className="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-lg">
+              {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+              {mode === 'signup' ? 'Create account' : 'Log in'}
+            </Button>
+          </form>
+          <div className="mt-4 text-center text-sm text-slate-500">
+            {mode === 'signup' ? 'Already have an account?' : "Don't have an account?"}{' '}
+            <button onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="text-violet-600 font-semibold hover:underline">
+              {mode === 'signup' ? 'Log in' : 'Sign up'}
+            </button>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
 }
 
 function App() {
   const [tab, setTab] = useState('dashboard')
   const [activeConvoId, setActiveConvoId] = useState(null)
+  const [user, setUser] = useState(undefined) // undefined=loading, null=anon, obj=authed
+
+  useEffect(() => {
+    api('/auth/me').then(setUser).catch(() => setUser(null))
+  }, [])
+
+  const logout = async () => {
+    await api('/auth/logout', { method: 'POST' })
+    setUser(null)
+    toast.message('Logged out')
+  }
+
+  if (user === undefined) {
+    return <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 to-fuchsia-50"><Loader2 className="w-6 h-6 animate-spin text-violet-500" /></div>
+  }
+  if (user === null) {
+    return <AuthScreen onAuthed={setUser} />
+  }
 
   const switchToInbox = (convoId) => {
     setActiveConvoId(convoId)
@@ -89,12 +178,21 @@ function App() {
               )
             })}
           </nav>
-          <div className="p-4 border-t border-violet-100">
+          <div className="p-4 border-t border-violet-100 space-y-3">
+            <div className="flex items-center justify-between gap-2 text-sm">
+              <div className="min-w-0">
+                <div className="font-semibold text-slate-800 truncate">{user.name}</div>
+                <div className="text-xs text-slate-500 truncate">{user.email}</div>
+              </div>
+              <Button onClick={logout} size="icon" variant="ghost" title="Log out" className="h-7 w-7 text-slate-500 hover:text-rose-600 flex-shrink-0">
+                <LogOut className="w-3.5 h-3.5" />
+              </Button>
+            </div>
             <div className="rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 text-white p-4 shadow-lg shadow-violet-200">
               <div className="flex items-center gap-1.5 text-xs font-semibold mb-1">
                 <Sparkles className="w-3.5 h-3.5" /> Powered by Claude 4.5
               </div>
-              <p className="text-xs text-violet-100">Your AI Auto-Closer never sleeps. Replies in under 5s.</p>
+              <p className="text-xs text-violet-100">Real Razorpay payments + AI auto-close, 24/7.</p>
             </div>
           </div>
         </aside>
@@ -106,6 +204,7 @@ function App() {
           {tab === 'simulator' && <SimulatorPage onTriggered={switchToInbox} />}
           {tab === 'inbox' && <InboxPage activeId={activeConvoId} setActiveId={setActiveConvoId} />}
           {tab === 'leads' && <LeadsPage />}
+          {tab === 'settings' && <SettingsPage user={user} />}
         </main>
       </div>
     </div>
@@ -681,6 +780,15 @@ function MessageBubble({ m, onPay }) {
       </div>
     )
   }
+  if (m.role === 'system') {
+    return (
+      <div className="flex justify-center">
+        <div className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-full">
+          {m.text}
+        </div>
+      </div>
+    )
+  }
   const isAgent = m.role === 'agent'
   const actions = m.meta?.actions || []
   return (
@@ -698,7 +806,7 @@ function MessageBubble({ m, onPay }) {
         </div>
         {actions.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-2">
-            {actions.map((a, i) => <ActionChip key={i} a={a} onPay={onPay} />)}
+            {actions.map((a, i) => <ActionChip key={i} a={a} />)}
           </div>
         )}
       </div>
@@ -706,19 +814,26 @@ function MessageBubble({ m, onPay }) {
   )
 }
 
-function ActionChip({ a, onPay }) {
+function ActionChip({ a }) {
   if (a.type === 'share_booking_link') {
     return (
       <a href={a.url || '#'} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100">
-        <CalendarDays className="w-3.5 h-3.5" /> Book a slot
+        <CalendarDays className="w-3.5 h-3.5" /> Book a slot <ExternalLink className="w-3 h-3" />
       </a>
     )
   }
   if (a.type === 'share_payment_link') {
+    if (a.link?.short_url) {
+      return (
+        <a href={a.link.short_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 font-medium">
+          <IndianRupee className="w-3.5 h-3.5" /> Pay ₹{a.amount} • {a.label} <ExternalLink className="w-3 h-3" />
+        </a>
+      )
+    }
     return (
-      <button onClick={() => onPay?.(a.amount)} className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100">
-        <IndianRupee className="w-3.5 h-3.5" /> Pay ₹{a.amount} • {a.label} <span className="ml-1 text-emerald-500">↗</span>
-      </button>
+      <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-rose-50 border border-rose-200 text-rose-700">
+        <IndianRupee className="w-3.5 h-3.5" /> Payment link unavailable
+      </span>
     )
   }
   if (a.type === 'share_pricing') {
@@ -787,6 +902,82 @@ function LeadsPage() {
             {!loading && leads.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-500">No leads yet. Run the IG Simulator.</td></tr>}
           </tbody>
         </table>
+      </Card>
+    </div>
+  )
+}
+
+function SettingsPage({ user }) {
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
+  const webhookUrl = `${baseUrl}/api/webhooks/razorpay`
+  const copy = (text, label) => {
+    navigator.clipboard.writeText(text)
+    toast.success(`${label} copied!`)
+  }
+  return (
+    <div className="p-8 max-w-4xl">
+      <PageHeader icon={Settings} title="Settings" subtitle="Account, integrations, and webhook configuration." />
+
+      <Card className="border-violet-100 mb-4">
+        <CardHeader><CardTitle className="text-base">Account</CardTitle></CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-slate-500">Name</span><span className="font-medium">{user.name}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Email</span><span className="font-medium">{user.email}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Business</span><span className="font-medium">{user.business_name}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500">Workspace ID</span><code className="text-xs bg-slate-100 px-2 py-0.5 rounded">{user.workspace_id?.slice(0, 8)}…</code></div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-violet-100 mb-4">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2"><IndianRupee className="w-4 h-4 text-emerald-600" /> Razorpay Webhook (REQUIRED for auto-conversion)</CardTitle>
+          <CardDescription>Configure this webhook in your Razorpay Dashboard so payments mark leads as converted automatically.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          <div>
+            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Webhook URL</label>
+            <div className="flex gap-2">
+              <Input readOnly value={webhookUrl} className="font-mono text-xs" />
+              <Button onClick={() => copy(webhookUrl, 'Webhook URL')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Webhook Secret</label>
+            <div className="flex gap-2">
+              <Input readOnly value="(set RAZORPAY_WEBHOOK_SECRET in your deployment env — see README)" className="font-mono text-xs" />
+            </div>
+            <p className="text-xs text-slate-500 mt-1">In dev, this is auto-generated in your <code>.env</code>. In Razorpay Dashboard → Account & Settings → Webhooks → Add New Webhook → paste the URL above and the same secret value.</p>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Events to subscribe</label>
+            <Badge className="bg-emerald-100 text-emerald-700 border-0 hover:bg-emerald-100">payment_link.paid</Badge>
+          </div>
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
+            <b>Test mode active.</b> Use Razorpay test cards (e.g. 4111 1111 1111 1111) on the payment link. Once paid, your dashboard will auto-mark the lead as <b>Converted</b> and log revenue.
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-violet-100">
+        <CardHeader><CardTitle className="text-base">Connected integrations</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+            <div className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Claude Sonnet 4.5 (AI Auto-Closer)</span></div>
+            <Badge className="bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200">Active</Badge>
+          </div>
+          <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+            <div className="flex items-center gap-2"><IndianRupee className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Razorpay Payments (Test Mode)</span></div>
+            <Badge className="bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200">Active</Badge>
+          </div>
+          <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
+            <div className="flex items-center gap-2"><Instagram className="w-4 h-4 text-slate-500" /><span className="text-sm font-medium">Instagram Graph API</span></div>
+            <Badge variant="outline" className="text-slate-500">Simulator only — Meta approval required</Badge>
+          </div>
+          <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
+            <div className="flex items-center gap-2"><MessageCircle className="w-4 h-4 text-slate-500" /><span className="text-sm font-medium">WhatsApp Cloud API</span></div>
+            <Badge variant="outline" className="text-slate-500">Not connected</Badge>
+          </div>
+        </CardContent>
       </Card>
     </div>
   )

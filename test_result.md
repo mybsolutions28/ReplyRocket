@@ -103,13 +103,12 @@
 #====================================================================================================
 
 user_problem_statement: |
-  ReplyRocket — AI Revenue Engine for Social Creators.
-  MVP focuses on the AI Auto-Closer flow: Instagram comment → auto DM → AI sales conversation
-  → booking/payment links → CRM lead progression → analytics.
-  Real Instagram OAuth is intentionally simulated via "IG Simulator" page for MVP.
+  ReplyRocket — production-ready AI Revenue Engine for social creators.
+  Real Razorpay test integration + multi-tenant auth + IG Simulator + AI Auto-Closer (Claude Sonnet 4.5).
+  Real Razorpay webhook with HMAC-SHA256 signature verification marks leads as converted automatically.
 
 backend:
-  - task: "AI Agent CRUD (training profile)"
+  - task: "Auth: signup/login/logout/me + JWT cookies + multi-tenant workspace seeding"
     implemented: true
     working: true
     file: "app/api/[[...path]]/route.js"
@@ -119,12 +118,12 @@ backend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "GET /api/agent (creates seeded Pawsome Pet Salon agent if absent), POST /api/agent upserts business_name, persona, tone, language, services, faqs, booking_link, upi_id."
+          comment: "POST /api/auth/signup creates user (bcrypt-hashed pwd), unique workspace_id, seeds an AI agent + 2 demo campaigns. Sets httpOnly JWT cookie 'rr_token' (7-day TTL). POST /api/auth/login authenticates. POST /api/auth/logout clears cookie. GET /api/auth/me returns publicUser or 401. All other routes require valid JWT and are scoped to user.workspace_id."
         - working: true
           agent: "testing"
-          comment: "✅ PASSED - GET /api/agent returns seed Pawsome Pet Salon profile with all required fields (services, faqs, booking_link, upi_id). No _id leakage. POST /api/agent successfully updates business_name and persists changes. Verified with re-GET."
+          comment: "✅ PASSED - Tested signup with 2 users (Alice, Bob), each got unique workspace_id. JWT cookie 'rr_token' set correctly. /auth/me returns correct user. Each workspace seeded with agent (business_name matches) and 2 campaigns (PRICE, INFO). Logout clears cookie, /auth/me returns 401 after logout. Login works with correct password, returns 401 with wrong password."
 
-  - task: "Campaigns CRUD"
+  - task: "Multi-tenant data isolation"
     implemented: true
     working: true
     file: "app/api/[[...path]]/route.js"
@@ -134,12 +133,42 @@ backend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "GET/POST/DELETE /api/campaigns. Auto-seeds 2 demo campaigns (PRICE, SHOOT) on first load. Stores keyword (uppercase), dm_template with {{handle}} placeholder, post_caption, post_image_url."
+          comment: "Every authenticated route filters by workspace_id from JWT. Two different signups should NOT see each other's agent/campaigns/leads/conversations."
         - working: true
           agent: "testing"
-          comment: "✅ PASSED - GET /api/campaigns returns 2 seeded campaigns (PRICE, SHOOT). POST /api/campaigns with keyword='buy' creates campaign with normalized keyword='BUY'. DELETE /api/campaigns/{id} removes campaign (verified with GET). No _id leakage."
+          comment: "✅ PASSED - Created campaign 'BUYA' with user A. Verified user B cannot see it in their campaigns list. User B only sees their own 2 seeded campaigns (PRICE, INFO) with different IDs than user A's campaigns. Complete workspace isolation confirmed."
 
-  - task: "Comment-to-DM Simulator endpoint"
+  - task: "Real Razorpay payment link generation"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "When AI returns share_payment_link action with amount, backend POSTs to https://api.razorpay.com/v1/payment_links with Basic Auth (key_id:key_secret base64). Returns short_url like https://rzp.io/rzp/XXXX. Manually verified: created link plink_Snl5M15VvxD3ws → https://rzp.io/rzp/TCLotswN."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - AI reply with payment request generated REAL Razorpay link: https://rzp.io/rzp/QFINqVV (plink_SnlHSpaOLIqRVE). Payment action includes link.short_url, link.amount (999), and link.label (Sample Service). Link properly stored in conversation messages meta.actions."
+
+  - task: "Razorpay webhook signature verification + auto-conversion"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "POST /api/webhooks/razorpay reads RAW body via request.text() before any json parse. Verifies HMAC-SHA256 with crypto.timingSafeEqual against x-razorpay-signature header. Idempotency via x-razorpay-event-id. On payment_link.paid event, parses reference_id ('convo_<uuid>'), marks lead converted with revenue, increments campaign conversions, drops a system message in chat. Manually verified: valid signature → lead.stage=converted, revenue=₹1499; invalid signature → 401."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - Webhook with valid HMAC-SHA256 signature accepted (200). Lead auto-converted: stage=converted, score=hot, revenue=₹999. System message '💰 Payment received: ₹999 (via Razorpay)' added to conversation. Idempotency working: duplicate webhook with same event_id returns {ok:true, dedup:true}. Invalid signature correctly rejected with 401 {error:'invalid_signature'}."
+
+  - task: "AI Auto-Closer with Claude Sonnet 4.5 + multi-turn"
     implemented: true
     working: true
     file: "app/api/[[...path]]/route.js"
@@ -149,42 +178,12 @@ backend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "POST /api/simulate-comment {campaign_id, commenter_handle, comment_text}. Matches keyword case-insensitive, creates lead+conversation+initial DM message, increments campaign.stats.triggers. Returns matched=false with message if keyword absent."
+          comment: "POST /api/conversations/{id}/reply calls Emergent OpenAI-compatible Claude endpoint with response_format=json_object. Filters 'comment' and 'system' role messages out of LLM history. Action enrichment: share_payment_link → creates real Razorpay link; share_booking_link → injects agent.booking_link URL. Lead stage updates only on AI suggestion (NOT auto-converting; conversion only via webhook)."
         - working: true
           agent: "testing"
-          comment: "✅ PASSED - POST /api/simulate-comment with matching keyword 'PRICE' returns matched=true, creates lead_id, conversation_id, and dm_text with {{handle}} replaced correctly. Non-matching comment returns matched=false with no lead/convo created. Invalid campaign_id returns 404 with error field."
+          comment: "✅ PASSED - AI reply generated coherent response with payment request. Returned proper JSON with reply, intent (payment), lead_score (hot), lead_stage, and actions array. Payment link action enriched with real Razorpay link. Booking link action enriched with agent.booking_link URL. Lead stage updated to 'new' (not auto-converted, as expected). AI context maintained across conversation."
 
-  - task: "AI Auto-Closer reply (Claude Sonnet 4.5)"
-    implemented: true
-    working: true
-    file: "app/api/[[...path]]/route.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-    status_history:
-        - working: "NA"
-          agent: "main"
-          comment: "POST /api/conversations/:id/reply — appends user message, calls Claude Sonnet 4.5 via Emergent OpenAI-compatible endpoint with response_format=json_object. AI returns {reply, intent, lead_score, lead_stage, actions[]}. Backend enriches share_payment_link with mock rzp.io link, share_booking_link with agent.booking_link. Updates lead.stage/score and conversation.last_message. Manual smoke test passed end-to-end."
-        - working: true
-          agent: "testing"
-          comment: "✅ PASSED - POST /api/conversations/{id}/reply works correctly across 3 turns. Turn 1 (pricing inquiry) returns intent, lead_score, lead_stage, actions array with valid types. Turn 2 (booking request) returns share_booking_link action with url=https://cal.com/pawsome/book. Turn 3 (payment request) returns share_payment_link action with enriched link object {url:'https://rzp.io/i/...', amount, label}. Multi-turn context maintained (Golden Retriever mentioned across turns). Invalid conversation_id returns 404. FIXED BUG: ai_meta was returning original parsed actions instead of enrichedActions - changed line 453 to return { ...parsed, actions: enrichedActions }."
-
-  - task: "Conversations & Messages list/detail"
-    implemented: true
-    working: true
-    file: "app/api/[[...path]]/route.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-    status_history:
-        - working: "NA"
-          agent: "main"
-          comment: "GET /api/conversations (with embedded lead), GET /api/conversations/:id/messages (sets unread=0), POST /api/conversations/:id/convert (manual conversion logging revenue)."
-        - working: true
-          agent: "testing"
-          comment: "✅ PASSED - GET /api/conversations returns list with last_message and embedded lead (no _id). GET /api/conversations/{id}/messages returns conversation, lead, messages array in chronological order (comment, agent, user, agent...). POST /api/conversations/{id}/convert with amount=1499 updates lead to stage='converted' and revenue>=1499."
-
-  - task: "Leads (CRM) list + stage update"
+  - task: "Campaigns CRUD (workspace-scoped)"
     implemented: true
     working: true
     file: "app/api/[[...path]]/route.js"
@@ -194,12 +193,27 @@ backend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "GET /api/leads, PATCH /api/leads/:id {stage,score}."
+          comment: "GET/POST/DELETE /api/campaigns. Now requires auth and scoped to workspace_id."
         - working: true
           agent: "testing"
-          comment: "✅ PASSED - GET /api/leads returns array with no _id leakage. PATCH /api/leads/{id} with stage='qualified' updates lead stage successfully (verified with GET)."
+          comment: "✅ PASSED - GET /api/campaigns returns only workspace-scoped campaigns. POST /api/campaigns creates campaign with normalized keyword (uppercase). Campaign visible only to creating user's workspace. Verified via multi-tenant isolation test."
 
-  - task: "Analytics aggregation"
+  - task: "Comment-to-DM Simulator (workspace-scoped)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "POST /api/simulate-comment unchanged but now scoped to workspace_id."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - POST /api/simulate-comment with matching keyword (PRICE) returns matched=true, lead_id, conversation_id, dm_text. Creates lead and conversation in correct workspace. DM template {{handle}} placeholder replaced correctly. Returns 404 for invalid campaign_id (workspace-scoped)."
+
+  - task: "Conversations + Messages + Leads (workspace-scoped)"
     implemented: true
     working: true
     file: "app/api/[[...path]]/route.js"
@@ -209,13 +223,48 @@ backend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "GET /api/analytics returns total_conversations, total_leads, total_messages, total_campaigns, comment_triggers, revenue, converted, conversion_rate, stages map, top_campaigns."
+          comment: "All list/detail endpoints require auth and filter by workspace_id."
         - working: true
           agent: "testing"
-          comment: "✅ PASSED - GET /api/analytics returns all required fields with correct types: total_conversations (int), total_leads (int), total_messages (int), total_campaigns (int), comment_triggers (int), revenue (number), converted (int), conversion_rate (number 0-100), stages (object), top_campaigns (array). Values reflect test actions correctly."
+          comment: "✅ PASSED - GET /api/conversations, /api/conversations/{id}/messages, /api/leads all require auth (401 without cookie). All endpoints properly scoped to workspace_id. Conversation messages include comment, agent, user, and system roles. Lead data correctly updated via AI and webhook."
+
+  - task: "Analytics aggregation (workspace-scoped)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+        - working: "NA"
+          agent: "main"
+          comment: "GET /api/analytics scoped to workspace_id."
+        - working: true
+          agent: "testing"
+          comment: "✅ PASSED - GET /api/analytics requires auth (401 without cookie). Returns workspace-scoped analytics. Verified via anonymous access test."
 
 frontend:
-  - task: "Dashboard hero + analytics + pipeline"
+  - task: "Auth gate (signup/login screen) + auto-redirect to dashboard"
+    implemented: true
+    working: true
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+        - working: true
+          agent: "main"
+          comment: "Verified via screenshot: gradient auth screen renders with toggle between Login/Signup. After signup, lands on full dashboard."
+
+  - task: "Settings page with webhook URL display"
+    implemented: true
+    working: "NA"
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+
+  - task: "Inbox payment chip (real Razorpay short_url)"
     implemented: true
     working: "NA"
     file: "app/page.js"
@@ -225,62 +274,22 @@ frontend:
     status_history:
         - working: "NA"
           agent: "main"
-          comment: "Manually screenshot-verified renders correctly with violet/fuchsia gradient hero and 4 stat cards."
-
-  - task: "AI Agent Trainer page"
-    implemented: true
-    working: "NA"
-    file: "app/page.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-
-  - task: "Campaigns CRUD UI"
-    implemented: true
-    working: "NA"
-    file: "app/page.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-
-  - task: "Instagram Simulator UI"
-    implemented: true
-    working: "NA"
-    file: "app/page.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-
-  - task: "Inbox + AI chat with action chips"
-    implemented: true
-    working: "NA"
-    file: "app/page.js"
-    stuck_count: 0
-    priority: "high"
-    needs_retesting: false
-
-  - task: "Leads CRM table"
-    implemented: true
-    working: "NA"
-    file: "app/page.js"
-    stuck_count: 0
-    priority: "medium"
-    needs_retesting: false
+          comment: "Action chip is now an <a href={a.link.short_url} target=_blank> opening real Razorpay hosted checkout."
 
 metadata:
   created_by: "main_agent"
-  version: "1.0"
+  version: "2.0"
   test_sequence: 1
   run_ui: false
 
 test_plan:
   current_focus:
-    - "AI Agent CRUD (training profile)"
-    - "Campaigns CRUD"
-    - "Comment-to-DM Simulator endpoint"
-    - "AI Auto-Closer reply (Claude Sonnet 4.5)"
-    - "Conversations & Messages list/detail"
-    - "Analytics aggregation"
+    - "Auth: signup/login/logout/me + JWT cookies + multi-tenant workspace seeding"
+    - "Multi-tenant data isolation"
+    - "Real Razorpay payment link generation"
+    - "Razorpay webhook signature verification + auto-conversion"
+    - "AI Auto-Closer with Claude Sonnet 4.5 + multi-turn"
+    - "Comment-to-DM Simulator (workspace-scoped)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -288,47 +297,47 @@ test_plan:
 agent_communication:
     - agent: "main"
       message: |
-        Built ReplyRocket MVP focused on the AI Auto-Closer aha-moment flow.
-        Tech: Next.js 14 app router + MongoDB + Claude Sonnet 4.5 via Emergent Universal Key (OpenAI-compatible endpoint at https://integrations.emergentagent.com/llm/v1).
+        Major upgrade from MVP → production-ready prototype:
+        1. Added auth (bcrypt + JWT cookies) with signup/login/logout/me routes.
+        2. Multi-tenant: every route now scoped to workspace_id from JWT. Signup auto-seeds AI agent + 2 demo campaigns per user.
+        3. Real Razorpay test integration: when AI returns share_payment_link, backend creates actual payment link via POST https://api.razorpay.com/v1/payment_links and returns short_url.
+        4. Razorpay webhook at POST /api/webhooks/razorpay with HMAC-SHA256 signature verification (timingSafeEqual), event idempotency, and auto-conversion logic (marks lead as converted with revenue when payment_link.paid event fires).
 
-        End-to-end flow: simulate Instagram comment → keyword match → fire personalized DM →
-        AI sales agent qualifies & closes (booking link / mock Razorpay pay link) → lead stage auto-progresses → analytics roll up.
+        Manual smoke tests passed:
+        - Signup → /api/auth/me returns user → seeded campaigns visible.
+        - AI generated REAL Razorpay link (https://rzp.io/rzp/TCLotswN).
+        - Webhook with VALID HMAC signature → lead.stage=converted, revenue=₹1499, system message dropped.
+        - Webhook with INVALID signature → 401.
 
-        Smoke-tested manually via curl: comment "PRICE please" → AI replied with Full Spa recommendation → booking link → ₹1499 payment link generation. All structured JSON parsing worked.
+        Please test all listed tasks. Key test scenarios:
+        1. Signup with email A, then signup with email B — confirm A cannot see B's data and vice versa (multi-tenant isolation).
+        2. After signup, verify /api/campaigns has 2 seeded entries (PRICE, INFO) and /api/agent has a default profile.
+        3. Run simulate-comment → AI reply → verify share_payment_link action contains link.short_url starting with https://rzp.io.
+        4. Confirm AI does NOT auto-mark lead as converted (only webhook should).
+        5. POST a properly-signed webhook payload to /api/webhooks/razorpay → verify lead becomes converted.
+        6. POST same webhook event_id twice → second should be idempotent (dedup:true).
+        7. POST webhook with bad signature → 401.
 
-        Please test all backend endpoints listed in test_plan. Key scenarios:
-        1. GET /api/agent returns seed agent on first call; POST /api/agent upserts.
-        2. GET /api/campaigns auto-seeds 2 campaigns; POST creates new with normalized keyword; DELETE removes.
-        3. POST /api/simulate-comment with matching keyword creates lead+convo+initial DM; non-matching returns matched=false.
-        4. POST /api/conversations/{id}/reply produces an AI response, stores user+agent messages, and returns ai_meta with intent/lead_score/lead_stage/actions. Verify share_payment_link enriched with mock rzp.io link and share_booking_link enriched with agent.booking_link.
-        5. PATCH /api/leads/{id} updates stage. POST /api/conversations/{id}/convert increments revenue.
-        6. GET /api/analytics aggregates correctly.
-
-        DB name: 'replyrocket' (from .env DB_NAME). Workspace fixed to "default".
-
+        Note: webhook secret is in /app/.env as RAZORPAY_WEBHOOK_SECRET. Razorpay test keys (rzp_test_*) are configured.
     - agent: "testing"
       message: |
-        ✅ ALL BACKEND TESTS PASSED (20/20)
+        ✅ ALL BACKEND TESTS PASSED (6/6)
         
-        Comprehensive testing completed for all backend endpoints at https://funnel-ai-hub.preview.emergentagent.com/api
+        Comprehensive production testing completed on https://funnel-ai-hub.preview.emergentagent.com/api
         
-        Test Results Summary:
-        1. ✅ Health Check - Returns {ok:true, app:'ReplyRocket', model:'claude-sonnet-4-5'}
-        2. ✅ AI Agent CRUD - GET returns seed Pawsome Pet Salon profile, POST updates and persists
-        3. ✅ Campaigns CRUD - GET returns 2 seeded campaigns, POST creates with normalized keyword, DELETE removes
-        4. ✅ Comment-to-DM Simulator - Matching keyword creates lead+convo+DM, non-matching returns matched=false, invalid campaign returns 404
-        5. ✅ AI Auto-Closer Reply - Multi-turn conversation works correctly with context persistence, actions enriched properly
-        6. ✅ Conversations - List with embedded lead, messages in order, convert updates lead stage/revenue
-        7. ✅ Leads - List returns array, PATCH updates stage
-        8. ✅ Analytics - All fields present with correct types and values
+        Test Results:
+        ✅ Test 1: Auth + Multi-tenant - Signup/login/logout with JWT cookies working. Each user gets unique workspace_id. Agent and 2 campaigns (PRICE, INFO) seeded per workspace.
+        ✅ Test 2: Data Isolation - Complete workspace isolation verified. User A's campaigns not visible to User B.
+        ✅ Test 3: Comment + AI Reply - Comment simulator working. AI generates REAL Razorpay payment links (https://rzp.io/rzp/QFINqVV). Payment action properly enriched with link.short_url, amount, label.
+        ✅ Test 4: Razorpay Webhook - HMAC-SHA256 signature verification working. Valid webhook auto-converts lead (stage=converted, score=hot, revenue=₹999). System message added. Idempotency working (dedup:true). Invalid signature rejected (401).
+        ✅ Test 5: Anonymous Access - All protected endpoints (/agent, /campaigns, /conversations, /leads, /analytics, /simulate-comment) return 401 without auth.
+        ✅ Test 6: Edge Cases - Duplicate email returns 409. Invalid conversation/campaign IDs return 404.
         
-        BUG FIXED: Found and fixed critical issue in /api/conversations/:id/reply endpoint (line 453). The ai_meta was returning original parsed actions instead of enrichedActions. Changed from `ai_meta: parsed` to `ai_meta: { ...parsed, actions: enrichedActions }`. This ensures booking links and payment links are properly enriched with url/link fields.
+        Key Findings:
+        - Multi-tenant architecture working perfectly
+        - Real Razorpay integration functional (test mode)
+        - Webhook signature verification secure and idempotent
+        - AI does NOT auto-convert (only webhook converts, as designed)
+        - All auth flows working correctly
         
-        Edge cases tested:
-        - Invalid campaign_id → 404 with error
-        - Invalid conversation_id → 404 with error
-        - No MongoDB ObjectId (_id) leakage anywhere
-        - {{handle}} placeholder replacement works correctly
-        - Multi-turn AI context maintained (Golden Retriever mentioned across 3 turns)
-        
-        All backend APIs are production-ready. No major issues found.
+        No critical issues found. Backend is production-ready.
