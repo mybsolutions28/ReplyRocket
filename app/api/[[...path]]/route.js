@@ -23,6 +23,26 @@ let client
 let db
 let indexesEnsured = false
 
+// Atlas: MONGODB_URI or MONGO_URL = mongodb+srv://.../sample_mflix?retryWrites=true&w=majority
+// Do NOT use /admin in the URI. App always uses database "sample_mflix".
+const ATLAS_DB_NAME = 'sample_mflix'
+const USERS_COLLECTION = 'users'
+
+// MONGO_URL only on Vercel/local — avoids MONGODB_URI=/admin overriding a correct MONGO_URL.
+function getMongoUri() {
+  return stripUriDatabase((process.env.MONGO_URL || '').trim())
+}
+
+// Remove /admin, /sample_mflix, etc. from the URI path. Database is always client.db(ATLAS_DB_NAME).
+function stripUriDatabase(uri) {
+  if (!uri) return ''
+  return uri.replace(/(mongodb(?:\+srv)?:\/\/[^/]+)\/[^/?]+(?=\?|$)/i, '$1')
+}
+
+function maskMongoUri(uri) {
+  return uri ? uri.replace(/:([^:@/]+)@/, ':***@') : '(not set)'
+}
+
 async function ensureIndexes(db) {
   if (indexesEnsured) return
   try {
@@ -58,18 +78,15 @@ async function ensureIndexes(db) {
 async function connectToMongo() {
   if (client && db) return db
 
-  const mongoUrl = process.env.MONGO_URL
-  if (!mongoUrl || !String(mongoUrl).trim()) {
+  const uri = getMongoUri()
+  if (!uri) {
     throw new Error(
-      'MONGO_URL is not set. Add it in Vercel → Project → Settings → Environment Variables (Production), then redeploy.',
+      'MONGO_URL is not set. Add it in Vercel → Settings → Environment Variables, then redeploy.',
     )
   }
-  const dbName = (process.env.DB_NAME || '').trim()
-  if (!dbName) {
-    throw new Error(
-      'DB_NAME is not set. Add it in Vercel → Settings → Environment Variables (e.g. replyrocket), then redeploy.',
-    )
-  }
+
+  console.log('Mongo URI:', maskMongoUri(uri))
+  console.log('DB name used:', ATLAS_DB_NAME)
 
   if (client) {
     try { await client.close() } catch (e) { /* stale partial connection */ }
@@ -77,10 +94,11 @@ async function connectToMongo() {
     db = null
   }
 
-  const nextClient = new MongoClient(mongoUrl)
+  const nextClient = new MongoClient(uri)
   try {
     await nextClient.connect()
-    const nextDb = nextClient.db(dbName)
+    const nextDb = nextClient.db(ATLAS_DB_NAME)
+    console.log('Connected database:', nextDb.databaseName)
     await ensureIndexes(nextDb)
     client = nextClient
     db = nextDb
@@ -532,7 +550,7 @@ async function handleRoute(request, { params }) {
     }
     const db = await connectToMongo()
     if (!db) {
-      throw new Error('MongoDB is not connected. Check MONGO_URL and DB_NAME on Vercel, then redeploy.')
+      throw new Error('MongoDB is not connected. Check MONGODB_URI on Vercel, then redeploy.')
     }
 
     // ============ PUBLIC ENDPOINTS ============
@@ -543,7 +561,7 @@ async function handleRoute(request, { params }) {
         app: 'ReplyRocket',
         model: 'claude-sonnet-4-5',
         mongo: true,
-        db: process.env.DB_NAME,
+        db: ATLAS_DB_NAME,
       }))
     }
 
@@ -551,7 +569,7 @@ async function handleRoute(request, { params }) {
     if (route === '/auth/signup' && method === 'POST') {
       const b = await request.json()
       if (!b.email || !b.password) return handleCORS(NextResponse.json({ error: 'email_password_required' }, { status: 400 }))
-      const existing = await db.collection('users').findOne({ email: b.email.toLowerCase() })
+      const existing = await db.collection(USERS_COLLECTION).findOne({ email: b.email.toLowerCase() })
       if (existing) return handleCORS(NextResponse.json({ error: 'email_taken' }, { status: 409 }))
       const uid = uuidv4()
       const wid = uuidv4()
@@ -567,7 +585,7 @@ async function handleRoute(request, { params }) {
         subscription_status: 'active',
         created_at: new Date(),
       }
-      await db.collection('users').insertOne(user)
+      await db.collection(USERS_COLLECTION).insertOne(user)
       await seedWorkspaceData(db, wid, user.business_name)
       const token = signToken(uid)
       const res = NextResponse.json(publicUser(user))
@@ -577,7 +595,8 @@ async function handleRoute(request, { params }) {
 
     if (route === '/auth/login' && method === 'POST') {
       const b = await request.json()
-      const u = await db.collection('users').findOne({ email: (b.email || '').toLowerCase() })
+      // const users = db.collection("users"); await users.findOne({ email })
+      const u = await db.collection(USERS_COLLECTION).findOne({ email: (b.email || '').toLowerCase() })
       if (!u) return handleCORS(NextResponse.json({ error: 'invalid_credentials' }, { status: 401 }))
       if (!u.password_hash) {
         return handleCORS(NextResponse.json({ error: 'invalid_credentials' }, { status: 401 }))
