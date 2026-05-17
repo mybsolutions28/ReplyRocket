@@ -56,13 +56,41 @@ async function ensureIndexes(db) {
 }
 
 async function connectToMongo() {
-  if (!client) {
-    client = new MongoClient(process.env.MONGO_URL)
-    await client.connect()
-    db = client.db(process.env.DB_NAME)
-    await ensureIndexes(db)
+  if (client && db) return db
+
+  const mongoUrl = process.env.MONGO_URL
+  if (!mongoUrl || !String(mongoUrl).trim()) {
+    throw new Error(
+      'MONGO_URL is not set. Add it in Vercel → Project → Settings → Environment Variables (Production), then redeploy.',
+    )
   }
-  return db
+  const dbName = (process.env.DB_NAME || '').trim()
+  if (!dbName) {
+    throw new Error(
+      'DB_NAME is not set. Add it in Vercel → Settings → Environment Variables (e.g. replyrocket), then redeploy.',
+    )
+  }
+
+  if (client) {
+    try { await client.close() } catch (e) { /* stale partial connection */ }
+    client = null
+    db = null
+  }
+
+  const nextClient = new MongoClient(mongoUrl)
+  try {
+    await nextClient.connect()
+    const nextDb = nextClient.db(dbName)
+    await ensureIndexes(nextDb)
+    client = nextClient
+    db = nextDb
+    return db
+  } catch (e) {
+    try { await nextClient.close() } catch (closeErr) { /* ignore */ }
+    client = null
+    db = null
+    throw new Error(`MongoDB connection failed: ${e.message}`)
+  }
 }
 
 // Resolve the public origin of this app for OAuth redirects.
@@ -113,7 +141,13 @@ const COOKIE_NAME = 'rr_token'
 const TOKEN_TTL = 7 * 24 * 60 * 60 // 7 days
 
 function signToken(uid) {
-  return jwt.sign({ uid }, process.env.JWT_SECRET, { expiresIn: '7d' })
+  const secret = process.env.JWT_SECRET
+  if (!secret || !String(secret).trim()) {
+    throw new Error(
+      'JWT_SECRET is not set. Add it in Vercel → Settings → Environment Variables, then redeploy.',
+    )
+  }
+  return jwt.sign({ uid }, secret, { expiresIn: '7d' })
 }
 
 async function getUser(request, db) {
@@ -376,7 +410,7 @@ function getPlatformRazorpayCreds() {
   const keyId = process.env.RAZORPAY_KEY_ID
   const keySecret = process.env.RAZORPAY_KEY_SECRET
   if (!keyId || !keySecret) return null
-  return { keyId, keySecret, mode: keyId.startsWith('rzp_live_') ? 'live' : 'test' }
+  return { keyId, keySecret, mode: String(keyId).startsWith('rzp_live_') ? 'live' : 'test' }
 }
 
 async function razorpayApi(path, { method = 'GET', body } = {}) {
@@ -497,10 +531,20 @@ async function handleRoute(request, { params }) {
       return tooLargeResponse()
     }
     const db = await connectToMongo()
+    if (!db) {
+      throw new Error('MongoDB is not connected. Check MONGO_URL and DB_NAME on Vercel, then redeploy.')
+    }
 
     // ============ PUBLIC ENDPOINTS ============
     if ((route === '/' || route === '/health') && method === 'GET') {
-      return handleCORS(NextResponse.json({ ok: true, app: 'ReplyRocket', model: 'claude-sonnet-4-5' }))
+      await db.command({ ping: 1 })
+      return handleCORS(NextResponse.json({
+        ok: true,
+        app: 'ReplyRocket',
+        model: 'claude-sonnet-4-5',
+        mongo: true,
+        db: process.env.DB_NAME,
+      }))
     }
 
     // ---- AUTH ----
@@ -535,6 +579,9 @@ async function handleRoute(request, { params }) {
       const b = await request.json()
       const u = await db.collection('users').findOne({ email: (b.email || '').toLowerCase() })
       if (!u) return handleCORS(NextResponse.json({ error: 'invalid_credentials' }, { status: 401 }))
+      if (!u.password_hash) {
+        return handleCORS(NextResponse.json({ error: 'invalid_credentials' }, { status: 401 }))
+      }
       const ok = await bcrypt.compare(b.password || '', u.password_hash)
       if (!ok) return handleCORS(NextResponse.json({ error: 'invalid_credentials' }, { status: 401 }))
       const token = signToken(u.id)
