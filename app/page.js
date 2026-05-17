@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
   Rocket, Inbox, Users, BarChart3, Bot, Megaphone, Sparkles, Send, Plus, Trash2,
-  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, Copy, ExternalLink
+  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, Copy, ExternalLink, Menu, X, Crown, Lock, Check
 } from 'lucide-react'
 
 const NAV = [
@@ -52,7 +52,7 @@ function api(path, opts = {}) {
 }
 
 function AuthScreen({ onAuthed }) {
-  const [mode, setMode] = useState('login')
+  const [mode, setMode] = useState('login') // 'login' | 'signup' | 'forgot' | 'forgot_sent'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
@@ -63,22 +63,33 @@ function AuthScreen({ onAuthed }) {
     e.preventDefault()
     setBusy(true)
     try {
-      const path = mode === 'signup' ? '/auth/signup' : '/auth/login'
-      const body = mode === 'signup'
-        ? { email, password, name, business_name: businessName }
-        : { email, password }
-      const u = await api(path, { method: 'POST', body: JSON.stringify(body) })
-      toast.success(mode === 'signup' ? 'Welcome to ReplyRocket! 🚀' : 'Welcome back!')
-      onAuthed(u)
+      if (mode === 'forgot') {
+        await api('/auth/forgot', { method: 'POST', body: JSON.stringify({ email }) })
+        setMode('forgot_sent')
+      } else {
+        const path = mode === 'signup' ? '/auth/signup' : '/auth/login'
+        const body = mode === 'signup'
+          ? { email, password, name, business_name: businessName }
+          : { email, password }
+        const u = await api(path, { method: 'POST', body: JSON.stringify(body) })
+        toast.success(mode === 'signup' ? 'Welcome to ReplyRocket! 🚀' : 'Welcome back!')
+        onAuthed(u)
+      }
     } catch (e) {
       toast.error(e.message)
     } finally { setBusy(false) }
   }
 
+  const title = mode === 'signup' ? 'Create your account' : mode === 'forgot' ? 'Forgot your password?' : mode === 'forgot_sent' ? 'Check your email' : 'Welcome back'
+  const subtitle = mode === 'signup' ? 'Spin up your AI sales agent in 30 seconds.'
+    : mode === 'forgot' ? "Type the email on your account. We'll send a reset link."
+    : mode === 'forgot_sent' ? 'If an account exists with that email, a reset link has been sent. The link expires in 1 hour.'
+    : 'Log in to your dashboard.'
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-600 via-fuchsia-500 to-pink-500 flex items-center justify-center p-4">
       <Card className="w-full max-w-md border-0 shadow-2xl">
-        <CardContent className="p-8">
+        <CardContent className="p-6 sm:p-8">
           <div className="flex items-center gap-2 mb-6">
             <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 flex items-center justify-center shadow-lg">
               <Rocket className="w-6 h-6 text-white" />
@@ -88,27 +99,53 @@ function AuthScreen({ onAuthed }) {
               <div className="text-xs text-slate-500 -mt-0.5">AI Revenue Engine</div>
             </div>
           </div>
-          <h1 className="text-2xl font-extrabold text-slate-900 mb-1">{mode === 'signup' ? 'Create your account' : 'Welcome back'}</h1>
-          <p className="text-slate-500 text-sm mb-6">{mode === 'signup' ? 'Spin up your AI sales agent in 30 seconds.' : 'Log in to your dashboard.'}</p>
-          <form onSubmit={submit} className="space-y-3">
-            {mode === 'signup' && (
-              <>
-                <Field label="Your name"><Input value={name} onChange={e => setName(e.target.value)} required /></Field>
-                <Field label="Business name"><Input value={businessName} onChange={e => setBusinessName(e.target.value)} placeholder="e.g. Pawsome Pet Salon" required /></Field>
-              </>
-            )}
-            <Field label="Email"><Input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></Field>
-            <Field label="Password"><Input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={6} /></Field>
-            <Button type="submit" disabled={busy} className="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-lg">
-              {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
-              {mode === 'signup' ? 'Create account' : 'Log in'}
-            </Button>
-          </form>
-          <div className="mt-4 text-center text-sm text-slate-500">
-            {mode === 'signup' ? 'Already have an account?' : "Don't have an account?"}{' '}
-            <button onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="text-violet-600 font-semibold hover:underline">
-              {mode === 'signup' ? 'Log in' : 'Sign up'}
-            </button>
+          <h1 className="text-2xl font-extrabold text-slate-900 mb-1">{title}</h1>
+          <p className="text-slate-500 text-sm mb-6">{subtitle}</p>
+
+          {mode === 'forgot_sent' ? (
+            <Button onClick={() => setMode('login')} className="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white">Back to log in</Button>
+          ) : (
+            <form onSubmit={submit} className="space-y-3">
+              {mode === 'signup' && (
+                <>
+                  <Field label="Your name"><Input value={name} onChange={e => setName(e.target.value)} required /></Field>
+                  <Field label="Business name"><Input value={businessName} onChange={e => setBusinessName(e.target.value)} placeholder="e.g. Pawsome Pet Salon" required /></Field>
+                </>
+              )}
+              <Field label="Email"><Input type="email" value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" /></Field>
+              {mode !== 'forgot' && (
+                <Field label="Password"><Input type="password" value={password} onChange={e => setPassword(e.target.value)} required minLength={6} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} /></Field>
+              )}
+              {mode === 'login' && (
+                <div className="text-right">
+                  <button type="button" onClick={() => setMode('forgot')} className="text-xs text-violet-600 hover:underline">Forgot password?</button>
+                </div>
+              )}
+              <Button type="submit" disabled={busy} className="w-full bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-lg">
+                {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                {mode === 'signup' ? 'Create account' : mode === 'forgot' ? 'Send reset link' : 'Log in'}
+              </Button>
+            </form>
+          )}
+
+          {(mode === 'login' || mode === 'signup') && (
+            <div className="mt-4 text-center text-sm text-slate-500">
+              {mode === 'signup' ? 'Already have an account?' : "Don't have an account?"}{' '}
+              <button onClick={() => setMode(mode === 'signup' ? 'login' : 'signup')} className="text-violet-600 font-semibold hover:underline">
+                {mode === 'signup' ? 'Log in' : 'Sign up'}
+              </button>
+            </div>
+          )}
+          {mode === 'forgot' && (
+            <div className="mt-4 text-center text-sm text-slate-500">
+              Remember it? <button onClick={() => setMode('login')} className="text-violet-600 font-semibold hover:underline">Back to log in</button>
+            </div>
+          )}
+
+          <div className="mt-6 text-center text-[10px] text-slate-400 space-x-3">
+            <a href="/privacy" className="hover:underline">Privacy</a>
+            <a href="/terms" className="hover:underline">Terms</a>
+            <a href="/data-deletion" className="hover:underline">Data deletion</a>
           </div>
         </CardContent>
       </Card>
@@ -120,14 +157,50 @@ function App() {
   const [tab, setTab] = useState('dashboard')
   const [activeConvoId, setActiveConvoId] = useState(null)
   const [user, setUser] = useState(undefined) // undefined=loading, null=anon, obj=authed
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [igStatus, setIgStatus] = useState(null)
+  const [billing, setBilling] = useState(null)
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false)
+
+  const reloadIG = () => api('/instagram/status').then(setIgStatus).catch(() => setIgStatus({ configured: false, connected: false }))
+  const reloadBilling = () => api('/billing/status').then(setBilling).catch(() => setBilling({ plan: 'free', status: 'inactive' }))
 
   useEffect(() => {
     api('/auth/me').then(setUser).catch(() => setUser(null))
   }, [])
 
+  // Load IG status + billing once we know there's a user
+  useEffect(() => {
+    if (!user) return
+    reloadIG()
+    reloadBilling()
+  }, [user?.id])
+
+  // Show the upgrade popup once per browser session for free-plan users
+  useEffect(() => {
+    if (!user || !billing) return
+    if (billing.plan === 'free' && typeof window !== 'undefined') {
+      const dismissed = sessionStorage.getItem('rr_upgrade_modal_dismissed')
+      if (!dismissed) {
+        const t = setTimeout(() => setShowUpgradeModal(true), 400)
+        return () => clearTimeout(t)
+      }
+    }
+  }, [user?.id, billing?.plan])
+
+  const dismissUpgradeModal = () => {
+    setShowUpgradeModal(false)
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('rr_upgrade_modal_dismissed', '1')
+    }
+  }
+
   const logout = async () => {
     await api('/auth/logout', { method: 'POST' })
     setUser(null)
+    setIgStatus(null)
+    setBilling(null)
+    if (typeof window !== 'undefined') sessionStorage.removeItem('rr_upgrade_modal_dismissed')
     toast.message('Logged out')
   }
 
@@ -143,62 +216,163 @@ function App() {
     setTab('inbox')
   }
 
+  const goToTab = (id) => {
+    setTab(id)
+    setMobileMenuOpen(false)
+  }
+
+  const igConnected = !!igStatus?.connected
+  const startIGConnect = () => {
+    if (igStatus && !igStatus.configured) {
+      toast.error('Set META_APP_ID and META_APP_SECRET in .env, then restart the dev server.')
+      return
+    }
+    window.location.href = '/api/instagram/connect'
+  }
+  const isFreePlan = (billing?.plan || 'free') === 'free'
+
+  const sidebarContent = (
+    <>
+      <div className="p-4 border-b border-violet-100 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 flex items-center justify-center shadow-lg shadow-violet-200">
+            <Rocket className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <div className="font-bold text-slate-900 leading-tight">ReplyRocket</div>
+            <div className="text-[10px] text-slate-500 font-medium">AI REVENUE ENGINE</div>
+          </div>
+        </div>
+        <button onClick={() => setMobileMenuOpen(false)} className="md:hidden p-1.5 rounded-md hover:bg-slate-100" aria-label="Close menu">
+          <X className="w-5 h-5 text-slate-600" />
+        </button>
+      </div>
+
+      {/* IG status card — LinkPlease style */}
+      <div className="px-3 pt-3">
+        <button
+          onClick={igConnected ? () => goToTab('settings') : startIGConnect}
+          className="w-full flex items-center gap-2.5 p-2.5 rounded-xl border border-violet-100 bg-white hover:bg-violet-50 transition text-left"
+        >
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm font-bold flex-shrink-0">
+            {(user.name || '?').charAt(0).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold text-slate-800 text-sm truncate">{user.name}</div>
+            {igConnected ? (
+              <div className="flex items-center gap-1 mt-0.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span className="text-[10px] text-emerald-700 font-medium truncate">@{igStatus.ig_username || 'connected'}</span>
+              </div>
+            ) : (
+              <span className="inline-block mt-0.5 text-[10px] font-medium text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                IG not connected
+              </span>
+            )}
+          </div>
+        </button>
+      </div>
+      <nav className="p-3 flex-1 space-y-1 overflow-y-auto">
+        {NAV.map(n => {
+          const Icon = n.icon
+          const active = tab === n.id
+          return (
+            <button
+              key={n.id}
+              onClick={() => goToTab(n.id)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
+                active
+                  ? 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-md shadow-violet-200'
+                  : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {n.label}
+            </button>
+          )
+        })}
+      </nav>
+      <div className="p-3 border-t border-violet-100 space-y-2.5">
+        {/* Connect Instagram quick action (LinkPlease pattern) */}
+        {!igConnected && (
+          <button
+            onClick={startIGConnect}
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg bg-gradient-to-r from-pink-50 to-purple-50 border border-pink-200 hover:from-pink-100 hover:to-purple-100 transition group"
+          >
+            <Instagram className="w-4 h-4 text-pink-600" />
+            <span className="text-sm font-semibold text-slate-800 flex-1 text-left">Connect Instagram</span>
+            <ArrowRight className="w-3.5 h-3.5 text-slate-400 group-hover:text-pink-600 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+        )}
+
+        {/* Usage indicators */}
+        {billing && (
+          <div className="px-1 space-y-2">
+            <UsageBar label="DMs / month" used={billing.limits?.dms_used ?? 0} total={billing.limits?.dms_per_month ?? 0} />
+            <UsageBar label="Contacts" used={billing.limits?.contacts_used ?? 0} total={billing.limits?.contacts ?? 0} />
+          </div>
+        )}
+
+        {/* Upgrade to Pro (free plan only) */}
+        {isFreePlan ? (
+          <a href="/pricing" className="block">
+            <div className="rounded-xl bg-gradient-to-br from-amber-400 via-orange-500 to-pink-500 text-white p-3.5 shadow-lg shadow-orange-200 hover:shadow-orange-300 transition cursor-pointer">
+              <div className="flex items-center gap-1.5 text-sm font-bold">
+                <Crown className="w-4 h-4" /> Upgrade to Pro
+              </div>
+              <p className="text-[11px] text-white/90 mt-0.5">Unlimited DMs, AI, automation</p>
+            </div>
+          </a>
+        ) : (
+          <div className="rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 text-white p-3.5 shadow-lg shadow-violet-200">
+            <div className="flex items-center gap-1.5 text-xs font-semibold mb-0.5">
+              <Crown className="w-3.5 h-3.5" /> {(billing?.plan || 'pro').toUpperCase()} plan active
+            </div>
+            <p className="text-[11px] text-violet-100">Powered by Claude 4.5</p>
+          </div>
+        )}
+
+        <button onClick={logout} className="w-full flex items-center justify-center gap-1.5 text-xs text-slate-500 hover:text-rose-600 py-1.5">
+          <LogOut className="w-3 h-3" /> Log out
+        </button>
+      </div>
+    </>
+  )
+
+  const activeNav = NAV.find(n => n.id === tab)
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-violet-50/40 to-fuchsia-50/30">
-      <div className="flex min-h-screen">
-        <aside className="w-64 border-r border-violet-100 bg-white/70 backdrop-blur sticky top-0 h-screen flex flex-col">
-          <div className="p-5 border-b border-violet-100">
-            <div className="flex items-center gap-2">
-              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 flex items-center justify-center shadow-lg shadow-violet-200">
-                <Rocket className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <div className="font-bold text-slate-900 leading-tight">ReplyRocket</div>
-                <div className="text-[10px] text-slate-500 font-medium">AI REVENUE ENGINE</div>
-              </div>
-            </div>
-          </div>
-          <nav className="p-3 flex-1 space-y-1">
-            {NAV.map(n => {
-              const Icon = n.icon
-              const active = tab === n.id
-              return (
-                <button
-                  key={n.id}
-                  onClick={() => setTab(n.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition ${
-                    active
-                      ? 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white shadow-md shadow-violet-200'
-                      : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'
-                  }`}
-                >
-                  <Icon className="w-4 h-4" />
-                  {n.label}
-                </button>
-              )
-            })}
-          </nav>
-          <div className="p-4 border-t border-violet-100 space-y-3">
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <div className="min-w-0">
-                <div className="font-semibold text-slate-800 truncate">{user.name}</div>
-                <div className="text-xs text-slate-500 truncate">{user.email}</div>
-              </div>
-              <Button onClick={logout} size="icon" variant="ghost" title="Log out" className="h-7 w-7 text-slate-500 hover:text-rose-600 flex-shrink-0">
-                <LogOut className="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div className="rounded-xl bg-gradient-to-br from-violet-600 to-fuchsia-500 text-white p-4 shadow-lg shadow-violet-200">
-              <div className="flex items-center gap-1.5 text-xs font-semibold mb-1">
-                <Sparkles className="w-3.5 h-3.5" /> Powered by Claude 4.5
-              </div>
-              <p className="text-xs text-violet-100">Real Razorpay payments + AI auto-close, 24/7.</p>
-            </div>
-          </div>
+      {/* Mobile top bar */}
+      <header className="md:hidden sticky top-0 z-30 flex items-center justify-between bg-white/95 backdrop-blur border-b border-violet-100 px-3 py-2.5">
+        <button onClick={() => setMobileMenuOpen(true)} className="p-2 rounded-md hover:bg-slate-100" aria-label="Open menu">
+          <Menu className="w-5 h-5 text-slate-700" />
+        </button>
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-600 to-fuchsia-500 flex items-center justify-center"><Rocket className="w-3.5 h-3.5 text-white" /></div>
+          <div className="text-sm font-bold text-slate-900">{activeNav?.label || 'ReplyRocket'}</div>
+        </div>
+        <div className="w-9" />{/* spacer for symmetry */}
+      </header>
+
+      <div className="flex min-h-screen md:min-h-screen">
+        {/* Desktop sidebar */}
+        <aside className="hidden md:flex w-64 border-r border-violet-100 bg-white/70 backdrop-blur sticky top-0 h-screen flex-col">
+          {sidebarContent}
         </aside>
 
-        <main className="flex-1 overflow-x-hidden">
-          {tab === 'dashboard' && <Dashboard go={setTab} />}
+        {/* Mobile drawer */}
+        {mobileMenuOpen && (
+          <>
+            <div className="md:hidden fixed inset-0 bg-slate-900/50 z-40 backdrop-blur-sm" onClick={() => setMobileMenuOpen(false)} />
+            <aside className="md:hidden fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-white shadow-2xl flex flex-col animate-in slide-in-from-left duration-200">
+              {sidebarContent}
+            </aside>
+          </>
+        )}
+
+        <main className="flex-1 overflow-x-hidden min-w-0">
+          {tab === 'dashboard' && <Dashboard go={setTab} igStatus={igStatus} billing={billing} onConnectIG={startIGConnect} />}
           {tab === 'agent' && <AgentPage />}
           {tab === 'campaigns' && <CampaignsPage />}
           {tab === 'simulator' && <SimulatorPage onTriggered={switchToInbox} />}
@@ -207,13 +381,109 @@ function App() {
           {tab === 'settings' && <SettingsPage user={user} />}
         </main>
       </div>
+
+      {showUpgradeModal && (
+        <UpgradeModal billing={billing} onClose={dismissUpgradeModal} />
+      )}
     </div>
   )
 }
 
-function Dashboard({ go }) {
+function UsageBar({ label, used = 0, total = 0 }) {
+  const pct = total > 0 ? Math.min(100, Math.round((used / total) * 100)) : 0
+  const display = total > 0 ? `${used}/${total}` : 'Unlimited'
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-1">
+        <span>{label}</span>
+        <span className="font-medium text-slate-700">{display}</span>
+      </div>
+      <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all"
+          style={{ width: total > 0 ? `${pct}%` : '100%' }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function UpgradeModal({ billing, onClose }) {
+  const plans = [
+    { id: 'pro', name: 'Pro', price: '₹999', tagline: 'For solo creators', features: ['10,000 DMs/month', 'AI auto-replies', '5 campaigns', 'Priority support'], highlight: false },
+    { id: 'growth', name: 'Growth', price: '₹3,999', tagline: 'For growing brands', features: ['50,000 DMs/month', 'AI + custom personas', 'Unlimited campaigns', 'Razorpay payment links', 'Phone support'], highlight: true },
+    { id: 'agency', name: 'Agency', price: '₹9,999', tagline: 'For agencies & teams', features: ['Unlimited DMs', 'Multi-workspace', 'White-label', 'Dedicated CSM'], highlight: false },
+  ]
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+        <div className="relative p-6 sm:p-8 bg-gradient-to-br from-violet-600 via-fuchsia-500 to-pink-500 text-white rounded-t-2xl">
+          <button onClick={onClose} className="absolute top-4 right-4 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition" aria-label="Close">
+            <X className="w-4 h-4 text-white" />
+          </button>
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/20 backdrop-blur text-xs font-semibold mb-3">
+            <Crown className="w-3.5 h-3.5" /> You're on the FREE plan
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-bold mb-1">Unlock the full ReplyRocket</h2>
+          <p className="text-white/90 text-sm sm:text-base">Upgrade now to unlock unlimited DMs, AI personas, and revenue automation 24/7.</p>
+        </div>
+
+        <div className="p-4 sm:p-6 grid sm:grid-cols-3 gap-3 sm:gap-4">
+          {plans.map(p => (
+            <div key={p.id} className={`relative rounded-xl border-2 p-4 sm:p-5 ${p.highlight ? 'border-violet-500 shadow-lg shadow-violet-200 bg-gradient-to-br from-violet-50 to-fuchsia-50' : 'border-slate-200 bg-white'}`}>
+              {p.highlight && (
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white text-[10px] font-bold tracking-wide">
+                  MOST POPULAR
+                </div>
+              )}
+              <div className="text-sm font-semibold text-slate-700">{p.name}</div>
+              <div className="text-xs text-slate-500 mb-3">{p.tagline}</div>
+              <div className="flex items-baseline gap-1 mb-3">
+                <span className="text-2xl sm:text-3xl font-bold text-slate-900">{p.price}</span>
+                <span className="text-xs text-slate-500">/mo</span>
+              </div>
+              <ul className="space-y-1.5 mb-4">
+                {p.features.map((f, i) => (
+                  <li key={i} className="flex items-start gap-1.5 text-xs text-slate-700">
+                    <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0 mt-0.5" /> {f}
+                  </li>
+                ))}
+              </ul>
+              <a href="/pricing" className="block">
+                <Button className={`w-full ${p.highlight ? 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-900'}`}>
+                  Choose {p.name}
+                </Button>
+              </a>
+            </div>
+          ))}
+        </div>
+
+        <div className="p-4 sm:p-6 pt-0 flex items-center justify-center">
+          <button onClick={onClose} className="text-xs text-slate-500 hover:text-slate-700 underline">
+            Maybe later — continue on Free
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Dashboard({ go, igStatus, billing, onConnectIG }) {
   const [stats, setStats] = useState(null)
   useEffect(() => { api('/analytics').then(setStats).catch(() => {}) }, [])
+
+  const igConnected = !!igStatus?.connected
+  const isFree = (billing?.plan || 'free') === 'free'
+
+  // If IG isn't connected, render the LinkPlease-style gate instead of metrics
+  if (igStatus && !igConnected) {
+    return (
+      <div className="p-4 sm:p-6 md:p-8 space-y-4 sm:space-y-6">
+        {isFree && <UpgradeBanner />}
+        <ConnectInstagramGate onConnect={onConnectIG} configured={!!igStatus?.configured} />
+      </div>
+    )
+  }
 
   const cards = [
     { label: 'Total Leads', value: stats?.total_leads ?? '—', icon: Users, tint: 'from-violet-500 to-fuchsia-500' },
@@ -223,7 +493,8 @@ function Dashboard({ go }) {
   ]
 
   return (
-    <div className="p-8 max-w-7xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-7xl">
+      {isFree && <div className="mb-4 sm:mb-6"><UpgradeBanner /></div>}
       <div className="rounded-3xl overflow-hidden bg-gradient-to-br from-violet-600 via-fuchsia-500 to-pink-500 p-8 text-white shadow-2xl shadow-violet-200 mb-8 relative">
         <div className="absolute top-0 right-0 w-96 h-96 bg-white/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
         <div className="relative">
@@ -319,6 +590,93 @@ function Dashboard({ go }) {
   )
 }
 
+function UpgradeBanner() {
+  return (
+    <a href="/pricing" className="block">
+      <div className="rounded-2xl bg-gradient-to-r from-violet-600 via-fuchsia-500 to-pink-500 p-4 sm:p-5 shadow-lg shadow-violet-200 hover:shadow-xl transition flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur flex items-center justify-center flex-shrink-0">
+            <Crown className="w-5 h-5 text-white" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="font-bold text-white text-base sm:text-lg leading-tight">Unlock Pro Power!</div>
+            <div className="text-xs sm:text-sm text-white/90 mt-0.5">Get unlimited automations, contacts & advanced analytics.</div>
+          </div>
+        </div>
+        <Button className="bg-white text-violet-700 hover:bg-violet-50 font-semibold shadow-md w-full sm:w-auto flex-shrink-0">
+          Upgrade to Pro <ArrowRight className="w-4 h-4 ml-1.5" />
+        </Button>
+      </div>
+    </a>
+  )
+}
+
+function ConnectInstagramGate({ onConnect, configured }) {
+  return (
+    <Card className="border-violet-100 bg-white overflow-hidden">
+      <CardContent className="p-0">
+        <div className="grid md:grid-cols-2">
+          <div className="p-6 sm:p-8 md:p-10 flex flex-col justify-center">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-wide w-fit mb-4">
+              <Lock className="w-3 h-3" /> Action Required
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-bold text-slate-900 mb-2 tracking-tight">
+              Connect Instagram to unlock your dashboard
+            </h2>
+            <p className="text-sm sm:text-base text-slate-600 mb-6 leading-relaxed">
+              Connect your Instagram Business account once to activate live metrics, the AI auto-closer, comment-to-DM automations, and lead tracking. Until then, the dashboard stays locked.
+            </p>
+            <ul className="space-y-2 mb-6">
+              {[
+                'AI replies to every comment & DM 24/7',
+                'Real-time leads, conversions & revenue',
+                'Multiple campaigns per post — no limits',
+                'Razorpay payment links inside DMs',
+              ].map((f) => (
+                <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
+                  <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" /> {f}
+                </li>
+              ))}
+            </ul>
+            {configured ? (
+              <Button
+                onClick={onConnect}
+                size="lg"
+                className="bg-gradient-to-r from-pink-500 via-fuchsia-500 to-violet-600 text-white shadow-xl hover:shadow-2xl font-semibold w-full sm:w-auto"
+              >
+                <Instagram className="w-5 h-5 mr-2" /> Connect Instagram
+              </Button>
+            ) : (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                <strong>Meta app not configured.</strong> An admin needs to set <code>META_APP_ID</code>, <code>META_APP_SECRET</code>, and <code>META_VERIFY_TOKEN</code> in the server <code>.env</code>, then restart. See the Settings page for live status.
+              </div>
+            )}
+            <div className="mt-4 text-[11px] text-slate-500">
+              We use the official Meta Instagram Graph API. We never see your password and you can disconnect any time.
+            </div>
+          </div>
+
+          <div className="relative bg-gradient-to-br from-violet-100 via-fuchsia-100 to-pink-100 p-8 hidden md:flex items-center justify-center">
+            <div className="absolute inset-0 bg-grid-slate-200/40 [mask-image:radial-gradient(ellipse_at_center,white,transparent_70%)]" />
+            <div className="relative w-44 h-44 rounded-3xl bg-gradient-to-br from-pink-500 via-fuchsia-500 to-violet-600 shadow-2xl shadow-fuchsia-300 flex items-center justify-center rotate-3 hover:rotate-0 transition-transform duration-300">
+              <Instagram className="w-24 h-24 text-white drop-shadow-lg" />
+            </div>
+            <div className="absolute top-10 right-10 w-16 h-16 rounded-2xl bg-white shadow-xl flex items-center justify-center -rotate-12">
+              <MessageCircle className="w-7 h-7 text-violet-600" />
+            </div>
+            <div className="absolute bottom-12 left-10 w-14 h-14 rounded-2xl bg-white shadow-xl flex items-center justify-center rotate-12">
+              <Bot className="w-7 h-7 text-fuchsia-600" />
+            </div>
+            <div className="absolute bottom-8 right-12 w-12 h-12 rounded-xl bg-white shadow-xl flex items-center justify-center -rotate-6">
+              <IndianRupee className="w-6 h-6 text-emerald-600" />
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 function AgentPage() {
   const [agent, setAgent] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -357,7 +715,7 @@ function AgentPage() {
   }
 
   return (
-    <div className="p-8 max-w-5xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-5xl">
       <PageHeader icon={Bot} title="AI Sales Agent" subtitle="Train your AI Auto-Closer with your business info — pricing, FAQs, booking link." />
       <div className="grid grid-cols-1 gap-4">
         <Card className="border-violet-100">
@@ -440,7 +798,13 @@ function CampaignsPage() {
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
-  const [form, setForm] = useState({ post_caption: '', keyword: '', dm_template: '', post_image_url: '' })
+  const [form, setForm] = useState({
+    post_caption: '',
+    keyword: '',
+    dm_template: '',
+    post_image_url: '',
+    instagram_media_id: '',
+  })
 
   const reload = () => api('/campaigns').then(l => { setList(l); setLoading(false) }).catch(() => setLoading(false))
   useEffect(() => { reload() }, [])
@@ -450,7 +814,13 @@ function CampaignsPage() {
     setCreating(true)
     try {
       await api('/campaigns', { method: 'POST', body: JSON.stringify(form) })
-      setForm({ post_caption: '', keyword: '', dm_template: '', post_image_url: '' })
+      setForm({
+        post_caption: '',
+        keyword: '',
+        dm_template: '',
+        post_image_url: '',
+        instagram_media_id: '',
+      })
       reload()
       toast.success('Campaign live 🚀')
     } catch (e) { toast.error(e.message) } finally { setCreating(false) }
@@ -458,7 +828,7 @@ function CampaignsPage() {
   const del = async (id) => { await api(`/campaigns/${id}`, { method: 'DELETE' }); reload() }
 
   return (
-    <div className="p-8 max-w-6xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-6xl">
       <PageHeader icon={Megaphone} title="Comment-to-DM Campaigns" subtitle="When someone comments your keyword on a post, your AI fires a personalized DM and starts closing." />
 
       <Card className="border-violet-100 mb-6">
@@ -474,6 +844,13 @@ function CampaignsPage() {
           </div>
           <Field label="Post caption">
             <Textarea rows={2} value={form.post_caption} onChange={e => setForm({ ...form, post_caption: e.target.value })} placeholder="Comment PRICE to get our menu in your DM 👇" />
+          </Field>
+          <Field label="Instagram media ID (optional — limits this campaign to one reel/carousel)">
+            <Input
+              value={form.instagram_media_id}
+              onChange={e => setForm({ ...form, instagram_media_id: e.target.value.trim() })}
+              placeholder="Graph API media id from the post URL or Graph Explorer"
+            />
           </Field>
           <Field label="Initial DM template ({{handle}} = commenter)">
             <Textarea rows={3} value={form.dm_template} onChange={e => setForm({ ...form, dm_template: e.target.value })} placeholder="Hey {{handle}}! Thanks for the comment 💜 What pet do you have?" />
@@ -496,7 +873,7 @@ function CampaignsPage() {
                 <Badge className="bg-violet-100 text-violet-700 border-0 hover:bg-violet-100"><Hash className="w-3 h-3 mr-0.5" />{c.keyword}</Badge>
                 <Button size="icon" variant="ghost" onClick={() => del(c.id)} className="h-7 w-7 text-rose-500"><Trash2 className="w-3.5 h-3.5" /></Button>
               </div>
-              <p className="text-sm text-slate-700 line-clamp-2 mb-2">{c.post_caption}</p>
+              <p className="text-xs text-violet-600 mb-2">{c.instagram_media_id ? `📎 Media: ${c.instagram_media_id}` : '📎 All posts (keyword only)'}</p>
               <p className="text-xs text-slate-500 line-clamp-2 italic">{c.dm_template}</p>
               <div className="flex gap-3 mt-3 text-xs">
                 <span className="text-slate-500">🎯 Triggers: <b className="text-slate-900">{c.stats?.triggers || 0}</b></span>
@@ -539,7 +916,7 @@ function SimulatorPage({ onTriggered }) {
   }
 
   return (
-    <div className="p-8 max-w-6xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-6xl">
       <PageHeader icon={Instagram} title="Instagram Simulator" subtitle="Pretend to be a fan commenting on your reel. Watch ReplyRocket auto-fire the DM and start the AI sales convo." />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -625,8 +1002,8 @@ function InboxPage({ activeId, setActiveId }) {
   const active = convos.find(c => c.id === activeId)
 
   return (
-    <div className="h-screen flex">
-      <div className="w-80 border-r border-violet-100 bg-white/60 flex flex-col">
+    <div className="h-[calc(100vh-49px)] md:h-screen flex">
+      <div className={`${activeId ? 'hidden md:flex' : 'flex'} w-full md:w-80 md:flex-shrink-0 border-r border-violet-100 bg-white/60 flex-col`}>
         <div className="p-4 border-b border-violet-100">
           <h2 className="font-bold text-lg flex items-center gap-2"><Inbox className="w-4 h-4 text-violet-600" /> Inbox</h2>
           <p className="text-xs text-slate-500">{convos.length} conversations</p>
@@ -663,9 +1040,9 @@ function InboxPage({ activeId, setActiveId }) {
         </ScrollArea>
       </div>
 
-      <div className="flex-1 flex flex-col bg-gradient-to-br from-slate-50 to-violet-50/30">
-        {active ? <Chat key={active.id} convo={active} onChange={reload} /> : (
-          <div className="flex-1 flex items-center justify-center text-slate-400">Select a conversation</div>
+      <div className={`${activeId ? 'flex' : 'hidden md:flex'} flex-1 flex-col bg-gradient-to-br from-slate-50 to-violet-50/30 min-w-0`}>
+        {active ? <Chat key={active.id} convo={active} onChange={reload} onBack={() => setActiveId(null)} /> : (
+          <div className="flex-1 hidden md:flex items-center justify-center text-slate-400">Select a conversation</div>
         )}
       </div>
     </div>
@@ -678,7 +1055,7 @@ function ScoreBadge({ score }) {
   return <Badge className="bg-amber-100 text-amber-700 border-0 hover:bg-amber-100 text-[9px]">WARM</Badge>
 }
 
-function Chat({ convo, onChange }) {
+function Chat({ convo, onChange, onBack }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [input, setInput] = useState('')
@@ -717,11 +1094,16 @@ function Chat({ convo, onChange }) {
 
   return (
     <>
-      <div className="border-b bg-white px-5 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Avatar className="w-10 h-10"><AvatarFallback className="bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white">{data.lead?.handle?.replace('@', '').slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
-          <div>
-            <div className="font-semibold flex items-center gap-2">{data.lead?.handle} <ScoreBadge score={data.lead?.score} /></div>
+      <div className="border-b bg-white px-3 sm:px-5 py-3 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          {onBack && (
+            <button onClick={onBack} className="md:hidden p-1.5 -ml-1 rounded-md hover:bg-slate-100 flex-shrink-0" aria-label="Back to inbox">
+              <ArrowRight className="w-5 h-5 rotate-180 text-slate-600" />
+            </button>
+          )}
+          <Avatar className="w-9 h-9 sm:w-10 sm:h-10 flex-shrink-0"><AvatarFallback className="bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white">{data.lead?.handle?.replace('@', '').slice(0, 2).toUpperCase()}</AvatarFallback></Avatar>
+          <div className="min-w-0">
+            <div className="font-semibold flex items-center gap-2 truncate">{data.lead?.handle} <ScoreBadge score={data.lead?.score} /></div>
             <div className="text-xs text-slate-500 flex items-center gap-1"><Instagram className="w-3 h-3" /> from comment trigger</div>
           </div>
         </div>
@@ -865,18 +1247,19 @@ function LeadsPage() {
   useEffect(() => { reload() }, [])
 
   return (
-    <div className="p-8 max-w-6xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-6xl">
       <PageHeader icon={Users} title="Leads (CRM)" subtitle="Every prospect captured from comments, scored & staged by your AI." />
       <Card className="border-violet-100 overflow-hidden">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[700px]">
           <thead className="bg-violet-50 text-slate-700">
             <tr>
-              <th className="text-left p-3 font-semibold">Handle</th>
-              <th className="text-left p-3 font-semibold">Source</th>
-              <th className="text-left p-3 font-semibold">Stage</th>
-              <th className="text-left p-3 font-semibold">Score</th>
-              <th className="text-right p-3 font-semibold">Revenue</th>
-              <th className="text-left p-3 font-semibold">Updated</th>
+              <th className="text-left p-3 font-semibold whitespace-nowrap">Handle</th>
+              <th className="text-left p-3 font-semibold whitespace-nowrap">Source</th>
+              <th className="text-left p-3 font-semibold whitespace-nowrap">Stage</th>
+              <th className="text-left p-3 font-semibold whitespace-nowrap">Score</th>
+              <th className="text-right p-3 font-semibold whitespace-nowrap">Revenue</th>
+              <th className="text-left p-3 font-semibold whitespace-nowrap">Updated</th>
             </tr>
           </thead>
           <tbody>
@@ -902,6 +1285,7 @@ function LeadsPage() {
             {!loading && leads.length === 0 && <tr><td colSpan={6} className="p-6 text-center text-slate-500">No leads yet. Run the IG Simulator.</td></tr>}
           </tbody>
         </table>
+        </div>
       </Card>
     </div>
   )
@@ -910,12 +1294,113 @@ function LeadsPage() {
 function SettingsPage({ user }) {
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
   const webhookUrl = `${baseUrl}/api/webhooks/razorpay`
+  const metaWebhookUrl = `${baseUrl}/api/webhooks/meta`
+  const igRedirectUri = `${baseUrl}/api/auth/instagram/callback`
+  const [igStatus, setIgStatus] = useState(null)
+  const [igBusy, setIgBusy] = useState(false)
+  const [rzpStatus, setRzpStatus] = useState(null)
+  const [rzpBusy, setRzpBusy] = useState(false)
+  const [rzpForm, setRzpForm] = useState({ key_id: '', key_secret: '', webhook_secret: '' })
+  const [rzpFormOpen, setRzpFormOpen] = useState(false)
+  const [billing, setBilling] = useState(null)
+  const [billingBusy, setBillingBusy] = useState(false)
+
+  const reloadRzp = () => api('/razorpay/status').then(setRzpStatus).catch(() => setRzpStatus({ connected: false }))
+  const reloadBilling = () => api('/billing/status').then(setBilling).catch(() => setBilling({ plan: 'free', status: 'inactive' }))
+
+  useEffect(() => {
+    reloadRzp()
+    reloadBilling()
+    api('/instagram/status').then(setIgStatus).catch(() => setIgStatus({ configured: false, connected: false }))
+    // Surface ?ig=connected / ?ig=error&reason=... query strings from the OAuth callback redirect.
+    if (typeof window !== 'undefined') {
+      const u = new URL(window.location.href)
+      const ig = u.searchParams.get('ig')
+      const reason = u.searchParams.get('reason')
+      if (ig === 'connected') toast.success('Instagram connected!')
+      else if (ig === 'error') toast.error(`Instagram connect failed${reason ? `: ${reason}` : ''}`)
+      if (ig) {
+        u.searchParams.delete('ig')
+        u.searchParams.delete('reason')
+        window.history.replaceState({}, '', u.toString())
+      }
+    }
+  }, [])
+
+  const connectIG = () => {
+    if (igStatus && !igStatus.configured) {
+      toast.error('Set META_APP_ID and META_APP_SECRET in .env first, then restart the dev server.')
+      return
+    }
+    setIgBusy(true)
+    window.location.href = '/api/instagram/connect'
+  }
+  const disconnectIG = async () => {
+    setIgBusy(true)
+    try {
+      await api('/instagram/disconnect', { method: 'POST' })
+      const fresh = await api('/instagram/status')
+      setIgStatus(fresh)
+      toast.success('Instagram disconnected.')
+    } catch (e) {
+      toast.error('Disconnect failed')
+    } finally {
+      setIgBusy(false)
+    }
+  }
+
   const copy = (text, label) => {
     navigator.clipboard.writeText(text)
     toast.success(`${label} copied!`)
   }
+
+  const connectRzp = async (e) => {
+    e?.preventDefault()
+    if (!rzpForm.key_id || !rzpForm.key_secret) return toast.error('Key ID and Key Secret are required.')
+    setRzpBusy(true)
+    try {
+      const r = await api('/razorpay/connect', { method: 'POST', body: JSON.stringify(rzpForm) })
+      setRzpStatus(r)
+      setRzpForm({ key_id: '', key_secret: '', webhook_secret: '' })
+      setRzpFormOpen(false)
+      if (r.warning) {
+        toast.message(`Razorpay saved (${r.mode} mode)`, { description: 'Could not verify online (your local network may be blocking it). Will verify on first real payment link.', duration: 8000 })
+      } else {
+        toast.success(`Razorpay connected (${r.mode} mode)`)
+      }
+    } catch (e) {
+      toast.error(e.message === 'razorpay_auth_failed' ? 'Razorpay rejected those keys. Double-check them.' : e.message === 'invalid_key_id_format' ? 'Key ID must start with rzp_test_ or rzp_live_' : `Connect failed: ${e.message}`)
+    } finally {
+      setRzpBusy(false)
+    }
+  }
+  const cancelSubscription = async () => {
+    if (!confirm('Cancel your subscription? You\'ll keep access until the end of your current billing period, then move to the Free plan.')) return
+    setBillingBusy(true)
+    try {
+      await api('/billing/cancel', { method: 'POST' })
+      await reloadBilling()
+      toast.success('Subscription cancelled. You\'ll keep Pro access until period end.')
+    } catch (e) {
+      toast.error(e.message === 'no_active_subscription' ? 'No active subscription to cancel.' : 'Cancel failed.')
+    } finally {
+      setBillingBusy(false)
+    }
+  }
+
+  const disconnectRzp = async () => {
+    if (!confirm('Disconnect Razorpay? Payment links will stop working until you reconnect.')) return
+    setRzpBusy(true)
+    try {
+      await api('/razorpay/disconnect', { method: 'POST' })
+      await reloadRzp()
+      toast.success('Razorpay disconnected.')
+    } catch (e) {
+      toast.error('Disconnect failed.')
+    } finally { setRzpBusy(false) }
+  }
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-4 sm:p-6 md:p-8 max-w-4xl">
       <PageHeader icon={Settings} title="Settings" subtitle="Account, integrations, and webhook configuration." />
 
       <Card className="border-violet-100 mb-4">
@@ -928,32 +1413,129 @@ function SettingsPage({ user }) {
         </CardContent>
       </Card>
 
+      {/* BILLING CARD */}
+      <Card className="border-violet-200 mb-4 bg-gradient-to-br from-violet-50/50 to-fuchsia-50/30">
+        <CardHeader>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2"><Sparkles className="w-4 h-4 text-violet-600" /> Billing & Plan</CardTitle>
+              <CardDescription>Your ReplyRocket subscription</CardDescription>
+            </div>
+            <Badge className={`border-0 ${billing?.plan === 'free' ? 'bg-slate-200 text-slate-700 hover:bg-slate-200' : 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white hover:from-violet-700 hover:to-fuchsia-600'}`}>
+              {billing?.plan_name || (billing ? billing.plan?.toUpperCase() : '…')}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {billing === null ? (
+            <div className="flex items-center gap-2 text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /> Loading plan…</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-lg bg-white border border-violet-100">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Status</div>
+                  <div className="text-sm font-bold capitalize">{billing.status}{billing.cancel_at_period_end ? ' (cancels at period end)' : ''}</div>
+                </div>
+                <div className="p-3 rounded-lg bg-white border border-violet-100">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold">Monthly</div>
+                  <div className="text-sm font-bold">{billing.price === 0 ? 'Free' : `₹${billing.price?.toLocaleString('en-IN')}`}</div>
+                </div>
+              </div>
+              {billing.current_period_end && (
+                <div className="text-xs text-slate-500">
+                  Current period ends: <b>{new Date(billing.current_period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</b>
+                </div>
+              )}
+              {billing.limits && (
+                <div className="p-3 rounded-lg bg-white border border-violet-100">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-2">Plan includes</div>
+                  <div className="text-xs text-slate-600 space-y-0.5">
+                    <div>• {billing.limits.monthly_dms?.toLocaleString('en-IN')} DMs/month</div>
+                    <div>• {billing.limits.social_accounts} social account{billing.limits.social_accounts > 1 ? 's' : ''}</div>
+                    <div>• AI replies: {billing.limits.ai_replies ? 'Yes' : 'No'}</div>
+                    {billing.limits.whatsapp && <div>• WhatsApp Cloud API</div>}
+                    {billing.limits.white_label && <div>• White-label branding</div>}
+                  </div>
+                </div>
+              )}
+              <div className="flex gap-2 flex-wrap">
+                <a href="/pricing" className="inline-flex items-center gap-1.5 bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:opacity-90">
+                  <Sparkles className="w-4 h-4" /> {billing.plan === 'free' ? 'Upgrade' : 'Change plan'}
+                </a>
+                {billing.plan !== 'free' && billing.status === 'active' && !billing.cancel_at_period_end && (
+                  <Button onClick={cancelSubscription} disabled={billingBusy} variant="outline" className="text-rose-600 border-rose-200 hover:bg-rose-50">
+                    {billingBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Cancel subscription'}
+                  </Button>
+                )}
+              </div>
+              {!billing.platform_configured && billing.plan === 'free' && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 text-xs text-amber-800">
+                  ⚠️ Platform Razorpay keys not set yet — paid upgrades won&apos;t work. (Admin: set <code>RAZORPAY_KEY_ID</code> + <code>RAZORPAY_KEY_SECRET</code> in env.)
+                </div>
+              )}
+            </>
+          )}
+        </CardContent>
+      </Card>
+
       <Card className="border-violet-100 mb-4">
         <CardHeader>
-          <CardTitle className="text-base flex items-center gap-2"><IndianRupee className="w-4 h-4 text-emerald-600" /> Razorpay Webhook (REQUIRED for auto-conversion)</CardTitle>
-          <CardDescription>Configure this webhook in your Razorpay Dashboard so payments mark leads as converted automatically.</CardDescription>
+          <CardTitle className="text-base flex items-center gap-2"><Instagram className="w-4 h-4 text-fuchsia-600" /> Instagram</CardTitle>
+          <CardDescription>Connect your Instagram Business/Creator account so ReplyRocket can auto-reply to real comments and DMs.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 text-sm">
-          <div>
-            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Webhook URL</label>
-            <div className="flex gap-2">
-              <Input readOnly value={webhookUrl} className="font-mono text-xs" />
-              <Button onClick={() => copy(webhookUrl, 'Webhook URL')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
+          {/* CONNECTION STATE */}
+          {igStatus === null ? (
+            <div className="flex items-center gap-2 text-slate-500"><Loader2 className="w-4 h-4 animate-spin" /> Checking status…</div>
+          ) : igStatus.connected ? (
+            <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+              <div className="flex items-center gap-3">
+                {igStatus.profile_picture_url ? (
+                  <img src={igStatus.profile_picture_url} alt="" className="w-9 h-9 rounded-full" />
+                ) : (
+                  <div className="w-9 h-9 rounded-full bg-gradient-to-br from-fuchsia-500 to-violet-600 flex items-center justify-center text-white"><Instagram className="w-4 h-4" /></div>
+                )}
+                <div>
+                  <div className="font-semibold">@{igStatus.ig_username || '(unknown)'} <Badge className="ml-1 bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200">Connected</Badge></div>
+                  <div className="text-xs text-slate-500">{igStatus.account_type || 'Instagram'} · token expires {igStatus.token_expires_at ? new Date(igStatus.token_expires_at).toLocaleDateString() : 'unknown'}</div>
+                </div>
+              </div>
+              <Button variant="outline" disabled={igBusy} onClick={disconnectIG}>{igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Disconnect'}</Button>
             </div>
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Webhook Secret</label>
-            <div className="flex gap-2">
-              <Input readOnly value="(set RAZORPAY_WEBHOOK_SECRET in your deployment env — see README)" className="font-mono text-xs" />
+          ) : (
+            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <div>
+                <div className="font-medium">Not connected</div>
+                <div className="text-xs text-slate-500">
+                  {igStatus.configured
+                    ? 'Click Connect — Instagram will ask for permission, then redirect back here.'
+                    : 'Add META_APP_ID + META_APP_SECRET to .env and restart the dev server.'}
+                </div>
+              </div>
+              <Button disabled={igBusy} onClick={connectIG} className="bg-gradient-to-r from-fuchsia-600 to-violet-600 hover:from-fuchsia-700 hover:to-violet-700">
+                {igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <><Instagram className="w-4 h-4 mr-2" /> Connect Instagram</>}
+              </Button>
             </div>
-            <p className="text-xs text-slate-500 mt-1">In dev, this is auto-generated in your <code>.env</code>. In Razorpay Dashboard → Account & Settings → Webhooks → Add New Webhook → paste the URL above and the same secret value.</p>
-          </div>
-          <div>
-            <label className="text-xs font-semibold text-slate-600 mb-1.5 block uppercase tracking-wide">Events to subscribe</label>
-            <Badge className="bg-emerald-100 text-emerald-700 border-0 hover:bg-emerald-100">payment_link.paid</Badge>
-          </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-800">
-            <b>Test mode active.</b> Use Razorpay test cards (e.g. 4111 1111 1111 1111) on the payment link. Once paid, your dashboard will auto-mark the lead as <b>Converted</b> and log revenue.
+          )}
+
+          {/* META DEVELOPER DASHBOARD SETUP */}
+          <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 text-xs text-violet-900 space-y-2">
+            <div className="font-semibold uppercase tracking-wide text-[10px]">Paste these into your Meta Developer App Dashboard</div>
+            <div>
+              <div className="text-violet-700 mb-0.5">Valid OAuth redirect URI</div>
+              <div className="flex gap-2">
+                <Input readOnly value={igRedirectUri} className="font-mono text-xs bg-white" />
+                <Button onClick={() => copy(igRedirectUri, 'Redirect URI')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
+              </div>
+            </div>
+            <div>
+              <div className="text-violet-700 mb-0.5">Webhook callback URL</div>
+              <div className="flex gap-2">
+                <Input readOnly value={metaWebhookUrl} className="font-mono text-xs bg-white" />
+                <Button onClick={() => copy(metaWebhookUrl, 'Webhook URL')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
+              </div>
+              <p className="mt-1 text-violet-700">For local dev, expose this via ngrok (<code>ngrok http 3000</code>) and paste the public HTTPS URL into both fields in Meta's dashboard.</p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -961,24 +1543,34 @@ function SettingsPage({ user }) {
       <Card className="border-violet-100">
         <CardHeader><CardTitle className="text-base">Connected integrations</CardTitle></CardHeader>
         <CardContent className="space-y-2">
-          <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-200">
-            <div className="flex items-center gap-2"><Sparkles className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Claude Sonnet 4.5 (AI Auto-Closer)</span></div>
-            <Badge className="bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200">Active</Badge>
-          </div>
-          <div className="flex items-center justify-between p-3 rounded-lg bg-emerald-50 border border-emerald-200">
-            <div className="flex items-center gap-2"><IndianRupee className="w-4 h-4 text-emerald-600" /><span className="text-sm font-medium">Razorpay Payments (Test Mode)</span></div>
-            <Badge className="bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200">Active</Badge>
-          </div>
-          <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
-            <div className="flex items-center gap-2"><Instagram className="w-4 h-4 text-slate-500" /><span className="text-sm font-medium">Instagram Graph API</span></div>
-            <Badge variant="outline" className="text-slate-500">Simulator only — Meta approval required</Badge>
-          </div>
-          <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
-            <div className="flex items-center gap-2"><MessageCircle className="w-4 h-4 text-slate-500" /><span className="text-sm font-medium">WhatsApp Cloud API</span></div>
-            <Badge variant="outline" className="text-slate-500">Not connected</Badge>
-          </div>
+          <IntegrationRow icon={Sparkles} label="Claude Sonnet 4.5 (AI Auto-Closer)" connected />
+          <IntegrationRow
+            icon={IndianRupee}
+            label={`Razorpay${rzpStatus?.connected ? ` (${rzpStatus.mode?.toUpperCase()} mode)` : ''}`}
+            connected={!!rzpStatus?.connected}
+          />
+          <IntegrationRow
+            icon={Instagram}
+            label={`Instagram${igStatus?.connected ? ` (@${igStatus.ig_username})` : ''}`}
+            connected={!!igStatus?.connected}
+          />
+          <IntegrationRow icon={MessageCircle} label="WhatsApp Cloud API" connected={false} />
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function IntegrationRow({ icon: Icon, label, connected }) {
+  return (
+    <div className={`flex items-center justify-between p-3 rounded-lg border ${connected ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'}`}>
+      <div className="flex items-center gap-2 min-w-0">
+        <Icon className={`w-4 h-4 flex-shrink-0 ${connected ? 'text-emerald-600' : 'text-slate-500'}`} />
+        <span className="text-sm font-medium truncate">{label}</span>
+      </div>
+      {connected
+        ? <Badge className="bg-emerald-200 text-emerald-800 border-0 hover:bg-emerald-200 flex-shrink-0">Connected</Badge>
+        : <Badge variant="outline" className="text-slate-500 flex-shrink-0">Not connected</Badge>}
     </div>
   )
 }

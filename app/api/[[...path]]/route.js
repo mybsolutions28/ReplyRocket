@@ -4,17 +4,94 @@ import { NextResponse } from 'next/server'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
+import {
+  isInstagramConfigured,
+  buildAuthorizeUrl,
+  exchangeCodeForShortLivedToken,
+  exchangeForLongLivedToken,
+  fetchUserProfile,
+  verifyMetaWebhookSignature,
+  parseSignedRequest,
+  sendDirectMessage,
+} from '@/lib/instagram'
+import { encryptSecret, decryptSecret, maskSecret } from '@/lib/crypto-secrets'
+import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
+import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
+import { extractInstagramCommentChanges, metaWebhookCommentsExtractionHint } from '@/lib/meta-instagram-webhook'
 
 let client
 let db
+let indexesEnsured = false
+
+async function ensureIndexes(db) {
+  if (indexesEnsured) return
+  try {
+    await Promise.all([
+      db.collection('users').createIndex({ email: 1 }, { unique: true }),
+      db.collection('users').createIndex({ id: 1 }, { unique: true }),
+      db.collection('agents').createIndex({ workspace_id: 1 }, { unique: true }),
+      db.collection('campaigns').createIndex({ workspace_id: 1, created_at: -1 }),
+      db.collection('campaigns').createIndex({ id: 1 }, { unique: true }),
+      db.collection('conversations').createIndex({ workspace_id: 1, updated_at: -1 }),
+      db.collection('conversations').createIndex({ id: 1 }, { unique: true }),
+      db.collection('conversations').createIndex({ lead_id: 1 }),
+      db.collection('conversations').createIndex({ campaign_id: 1 }),
+      db.collection('messages').createIndex({ conversation_id: 1, ts: 1 }),
+      db.collection('messages').createIndex({ id: 1 }, { unique: true }),
+      db.collection('leads').createIndex({ workspace_id: 1, updated_at: -1 }),
+      db.collection('leads').createIndex({ id: 1 }, { unique: true }),
+      db.collection('instagram_accounts').createIndex({ workspace_id: 1 }, { unique: true }),
+      db.collection('instagram_accounts').createIndex({ ig_user_id: 1 }),
+      db.collection('webhook_events').createIndex({ id: 1 }, { unique: true }),
+      db.collection('meta_webhook_events').createIndex({ id: 1 }, { unique: true }),
+      db.collection('meta_webhook_events').createIndex({ received_at: -1 }),
+      db.collection('ig_comment_dedup').createIndex({ comment_id: 1 }, { unique: true }),
+      db.collection('password_resets').createIndex({ token: 1 }, { unique: true }),
+      db.collection('password_resets').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
+    ])
+    indexesEnsured = true
+  } catch (e) {
+    console.warn('Index creation warning:', e.message)
+  }
+}
 
 async function connectToMongo() {
   if (!client) {
     client = new MongoClient(process.env.MONGO_URL)
     await client.connect()
     db = client.db(process.env.DB_NAME)
+    await ensureIndexes(db)
   }
   return db
+}
+
+// Resolve the public origin of this app for OAuth redirects.
+// Priority: NEXT_PUBLIC_BASE_URL env -> X-Forwarded-* headers (ngrok/proxies) -> request origin.
+function baseUrl(request) {
+  // Priority: X-Forwarded-* headers (ngrok / Vercel / any reverse proxy) →
+  // NEXT_PUBLIC_BASE_URL env → request URL. The forwarded headers must win
+  // so OAuth redirects + webhook URLs auto-adapt when the user accesses the
+  // app through ngrok in dev.
+  const fwdHost = request.headers.get('x-forwarded-host')
+  const fwdProto = request.headers.get('x-forwarded-proto')
+  if (fwdHost) return `${fwdProto || 'https'}://${fwdHost}`
+  const fromEnv = process.env.NEXT_PUBLIC_BASE_URL
+  if (fromEnv) return fromEnv.replace(/\/$/, '')
+  const host = request.headers.get('host')
+  if (host) return `http://${host}`
+  try { return new URL(request.url).origin } catch { return '' }
+}
+
+// Reject requests with bodies larger than `limit` bytes (default 256KB).
+// Webhooks from Meta/Razorpay are tiny; user JSON payloads are even smaller.
+// This prevents a malicious client from POSTing 100MB and OOM-ing the function.
+const MAX_BODY_BYTES = 256 * 1024
+function tooLargeResponse() {
+  return handleCORS(NextResponse.json({ error: 'payload_too_large' }, { status: 413 }))
+}
+function requestTooLarge(request) {
+  const len = Number(request.headers.get('content-length') || 0)
+  return len > MAX_BODY_BYTES
 }
 
 function handleCORS(response) {
@@ -50,10 +127,14 @@ async function getUser(request, db) {
 }
 
 function setAuthCookie(response, token) {
+  // `secure: true` blocks cookie over http://localhost. Auto-enable only on
+  // explicit HTTPS deployment (NEXT_PUBLIC_BASE_URL=https://...) or NODE_ENV=production.
+  const isHttps = (process.env.NEXT_PUBLIC_BASE_URL || '').startsWith('https://')
+  const secure = isHttps || process.env.NODE_ENV === 'production'
   response.cookies.set(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: true,
+    secure,
     path: '/',
     maxAge: TOKEN_TTL,
   })
@@ -191,12 +272,156 @@ function parseJSON(text) {
 }
 
 // =====================================================================
-// RAZORPAY
+// Instagram webhooks → campaign match → DM + Inbox records
 // =====================================================================
-async function createRazorpayLink({ amount, label, conversationId, leadHandle }) {
+async function processInstagramCommentWebhookEvent(db, evt) {
+  const {
+    igBusinessUserId,
+    commentId,
+    text,
+    mediaId,
+    commenterIgsid,
+    commenterUsername,
+  } = evt
+
+  if (!commentId || text == null || !igBusinessUserId) return { skipped: 'invalid_event' }
+  if (!commenterIgsid || commenterIgsid === igBusinessUserId) {
+    return { skipped: 'no_recipient_or_self' }
+  }
+
+  const acct = await db.collection('instagram_accounts').findOne({
+    $or: [{ ig_user_id: igBusinessUserId }, { ig_user_id: String(Number(igBusinessUserId)) }],
+  })
+  if (!acct?.access_token) {
+    return { skipped: 'no_connected_account' }
+  }
+
+  const WS = acct.workspace_id
+  const camps = await db
+    .collection('campaigns')
+    .find({ workspace_id: WS, enabled: { $ne: false } })
+    .sort({ created_at: -1 })
+    .toArray()
+
+  const upper = String(text).toUpperCase()
+  let camp = null
+  for (const c of camps) {
+    const kw = (c.keyword || '').toUpperCase().trim()
+    if (!kw || !upper.includes(kw)) continue
+    const mid = (c.instagram_media_id || '').trim()
+    if (mid) {
+      if (!mediaId || mid !== mediaId) continue
+    }
+    camp = c
+    break
+  }
+
+  if (!camp) return { skipped: 'no_matching_campaign', workspace_id: WS }
+
+  try {
+    await db.collection('ig_comment_dedup').insertOne({ comment_id: commentId, received_at: new Date() })
+  } catch (e) {
+    if (e?.code === 11000) return { skipped: 'duplicate_comment' }
+    throw e
+  }
+
+  const handle = commenterUsername
+    ? `@${commenterUsername.replace(/^@/, '')}`
+    : `@user_${commenterIgsid.slice(-8)}`
+
+  const { convoId, dmText } = await createCommentTriggeredConversation(db, WS, camp, {
+    commentText: String(text),
+    handle,
+    meta: {
+      post_caption: camp.post_caption,
+      instagram_media_id: mediaId,
+      instagram_comment_id: commentId,
+      webhook: true,
+    },
+  })
+
+  try {
+    await sendDirectMessage({
+      accessToken: acct.access_token,
+      recipientIgsid: commenterIgsid,
+      text: dmText,
+    })
+    await db.collection('messages').updateMany(
+      { conversation_id: convoId, role: 'agent', 'meta.is_initial_dm': true },
+      { $set: { 'meta.ig_dm_sent': true } },
+    )
+    return { ok: true, conversation_id: convoId, campaign_id: camp.id }
+  } catch (e) {
+    console.error('Instagram sendDirectMessage failed:', e)
+    await db.collection('messages').updateMany(
+      { conversation_id: convoId, role: 'agent', 'meta.is_initial_dm': true },
+      {
+        $set: {
+          'meta.ig_dm_sent': false,
+          'meta.ig_dm_error': String(e?.message || e).slice(0, 600),
+        },
+      },
+    )
+    return { ok: true, conversation_id: convoId, dm_failed: String(e?.message || e).slice(0, 200) }
+  }
+}
+
+// =====================================================================
+// RAZORPAY - PLATFORM (SaaS subscription billing)
+// =====================================================================
+// Returns the platform's Razorpay credentials (NOT per-workspace).
+// These are the keys YOU (the SaaS owner) use to collect subscription
+// payments from customers buying ReplyRocket plans.
+function getPlatformRazorpayCreds() {
   const keyId = process.env.RAZORPAY_KEY_ID
   const keySecret = process.env.RAZORPAY_KEY_SECRET
-  if (!keyId || !keySecret) throw new Error('Razorpay not configured')
+  if (!keyId || !keySecret) return null
+  return { keyId, keySecret, mode: keyId.startsWith('rzp_live_') ? 'live' : 'test' }
+}
+
+async function razorpayApi(path, { method = 'GET', body } = {}) {
+  const creds = getPlatformRazorpayCreds()
+  if (!creds) throw new Error('platform_razorpay_not_configured')
+  const auth = Buffer.from(`${creds.keyId}:${creds.keySecret}`).toString('base64')
+  const init = {
+    method,
+    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+  }
+  if (body !== undefined) init.body = JSON.stringify(body)
+  const resp = await fetch(`https://api.razorpay.com${path}`, init)
+  const text = await resp.text()
+  let data
+  try { data = JSON.parse(text) } catch { data = { raw: text } }
+  if (!resp.ok) {
+    const err = new Error(`razorpay_${resp.status}`)
+    err.status = resp.status
+    err.payload = data
+    throw err
+  }
+  return data
+}
+
+// =====================================================================
+// RAZORPAY - PER-WORKSPACE (legacy, kept for future in-DM payments)
+// =====================================================================
+// Per-workspace credentials: each customer brings their own Razorpay account
+// (multi-tenant SaaS). The webhook secret can be global (one URL for all
+// tenants) OR per-tenant. We default to per-tenant, with env fallback.
+async function getRazorpayCreds(db, workspaceId) {
+  const a = await db.collection('agents').findOne({ workspace_id: workspaceId })
+  if (!a?.razorpay_key_id || !a?.razorpay_key_secret_enc) return null
+  return {
+    keyId: a.razorpay_key_id,
+    keySecret: decryptSecret(a.razorpay_key_secret_enc),
+    webhookSecret: a.razorpay_webhook_secret_enc ? decryptSecret(a.razorpay_webhook_secret_enc) : null,
+    mode: a.razorpay_mode || (a.razorpay_key_id?.startsWith('rzp_live_') ? 'live' : 'test'),
+  }
+}
+
+async function createRazorpayLink({ db, workspaceId, amount, label, conversationId, leadHandle }) {
+  const creds = await getRazorpayCreds(db, workspaceId)
+  if (!creds?.keyId || !creds?.keySecret) throw new Error('razorpay_not_configured')
+  const { keyId, keySecret } = creds
   const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64')
   const payload = {
     amount: Math.round(Number(amount) * 100),
@@ -226,15 +451,37 @@ async function createRazorpayLink({ amount, label, conversationId, leadHandle })
   return { id: data.id, short_url: data.short_url, amount: amount, label }
 }
 
-function verifyRazorpayWebhook(rawBody, signature) {
-  if (!signature) return false
-  const expected = crypto
-    .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
-    .update(rawBody)
-    .digest('hex')
+function verifyRazorpayWebhookWithSecret(rawBody, signature, secret) {
+  if (!signature || !secret) return false
+  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
   try {
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
   } catch (e) { return false }
+}
+
+// Try each workspace's webhook secret until one verifies. This lets multiple
+// tenants share the same /api/webhooks/razorpay URL (e.g. on Vercel), each
+// having configured Razorpay → Webhooks with their own secret.
+// We also fall back to a global RAZORPAY_WEBHOOK_SECRET env if set.
+async function verifyAndIdentifyRazorpayWebhook(db, rawBody, signature) {
+  if (!signature) return { ok: false }
+  // Global env fallback first (cheapest)
+  const globalSecret = process.env.RAZORPAY_WEBHOOK_SECRET
+  if (globalSecret && verifyRazorpayWebhookWithSecret(rawBody, signature, globalSecret)) {
+    return { ok: true, source: 'global' }
+  }
+  // Per-tenant secrets stored encrypted in agents collection
+  const agents = await db.collection('agents').find(
+    { razorpay_webhook_secret_enc: { $exists: true, $ne: '' } },
+    { projection: { workspace_id: 1, razorpay_webhook_secret_enc: 1 } },
+  ).toArray()
+  for (const a of agents) {
+    const secret = decryptSecret(a.razorpay_webhook_secret_enc)
+    if (verifyRazorpayWebhookWithSecret(rawBody, signature, secret)) {
+      return { ok: true, source: 'tenant', workspace_id: a.workspace_id }
+    }
+  }
+  return { ok: false }
 }
 
 // =====================================================================
@@ -246,6 +493,9 @@ async function handleRoute(request, { params }) {
   const method = request.method
 
   try {
+    if (['POST', 'PUT', 'PATCH'].includes(method) && requestTooLarge(request)) {
+      return tooLargeResponse()
+    }
     const db = await connectToMongo()
 
     // ============ PUBLIC ENDPOINTS ============
@@ -269,6 +519,8 @@ async function handleRoute(request, { params }) {
         password_hash: hash,
         workspace_id: wid,
         business_name: b.business_name || (b.name || 'My Business'),
+        plan: DEFAULT_PLAN,
+        subscription_status: 'active',
         created_at: new Date(),
       }
       await db.collection('users').insertOne(user)
@@ -297,10 +549,231 @@ async function handleRoute(request, { params }) {
       return handleCORS(res)
     }
 
+    // ---- FORGOT / RESET PASSWORD ----
+    if (route === '/auth/forgot' && method === 'POST') {
+      const b = await request.json().catch(() => ({}))
+      const email = (b.email || '').toLowerCase().trim()
+      // Always respond 200 (don't leak which emails exist)
+      const generic = { ok: true, message: 'If an account exists with that email, a reset link has been sent.' }
+      if (!email) return handleCORS(NextResponse.json(generic))
+      const u = await db.collection('users').findOne({ email })
+      if (!u) {
+        console.log(`Forgot-password requested for unknown email ${email} - no-op.`)
+        return handleCORS(NextResponse.json(generic))
+      }
+      const token = uuidv4().replace(/-/g, '') + uuidv4().replace(/-/g, '')
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000)
+      await db.collection('password_resets').insertOne({
+        token, user_id: u.id, email, created_at: new Date(), expires_at: expiresAt, used: false,
+      })
+      const resetUrl = `${baseUrl(request)}/reset?token=${token}`
+      // EMAIL STUB - wire SMTP/Resend/SendGrid later.
+      console.log('═══════════════════════════════════════════════════════════')
+      console.log(`Password reset link for ${email}:`)
+      console.log(resetUrl)
+      console.log('Expires at:', expiresAt.toISOString())
+      console.log('═══════════════════════════════════════════════════════════')
+      return handleCORS(NextResponse.json(generic))
+    }
+
+    if (route === '/auth/reset' && method === 'POST') {
+      const b = await request.json().catch(() => ({}))
+      const token = b.token
+      const newPassword = b.password
+      if (!token || !newPassword || newPassword.length < 6) {
+        return handleCORS(NextResponse.json({ error: 'invalid_input' }, { status: 400 }))
+      }
+      const rec = await db.collection('password_resets').findOne({ token })
+      if (!rec || rec.used || new Date(rec.expires_at) < new Date()) {
+        return handleCORS(NextResponse.json({ error: 'invalid_or_expired' }, { status: 400 }))
+      }
+      const hash = await bcrypt.hash(newPassword, 10)
+      await db.collection('users').updateOne({ id: rec.user_id }, { $set: { password_hash: hash } })
+      await db.collection('password_resets').updateOne({ token }, { $set: { used: true, used_at: new Date() } })
+      return handleCORS(NextResponse.json({ ok: true }))
+    }
+
     if (route === '/auth/me' && method === 'GET') {
       const u = await getUser(request, db)
       if (!u) return handleCORS(NextResponse.json({ error: 'unauthorized' }, { status: 401 }))
       return handleCORS(NextResponse.json(publicUser(u)))
+    }
+
+    // ---- INSTAGRAM OAUTH CALLBACK (PUBLIC) ----
+    // Meta redirects back here after the user authorizes on instagram.com.
+    if (route === '/auth/instagram/callback' && method === 'GET') {
+      const url = new URL(request.url)
+      const code = url.searchParams.get('code')
+      const state = url.searchParams.get('state')
+      const error = url.searchParams.get('error')
+      const errorReason = url.searchParams.get('error_reason')
+      const errorDescription = url.searchParams.get('error_description')
+
+      const redirectWithStatus = (status) => NextResponse.redirect(`${baseUrl(request)}/?ig=${status}`)
+
+      if (error) {
+        console.warn('IG OAuth error:', error, errorReason, errorDescription)
+        return redirectWithStatus(`error&reason=${encodeURIComponent(errorReason || error)}`)
+      }
+      if (!code || !state) return redirectWithStatus('error&reason=missing_code_or_state')
+      if (!isInstagramConfigured()) return redirectWithStatus('error&reason=app_not_configured')
+
+      let decoded
+      try {
+        decoded = jwt.verify(state, process.env.JWT_SECRET)
+      } catch (e) {
+        return redirectWithStatus('error&reason=bad_state')
+      }
+      const stateUser = await db.collection('users').findOne({ id: decoded.uid })
+      if (!stateUser) return redirectWithStatus('error&reason=user_not_found')
+
+      try {
+        const redirectUri = `${baseUrl(request)}/api/auth/instagram/callback`
+        const short = await exchangeCodeForShortLivedToken({ code, redirectUri })
+        const long = await exchangeForLongLivedToken({ shortLivedToken: short.access_token })
+        const profile = await fetchUserProfile({ accessToken: long.access_token })
+
+        const expiresAt = new Date(Date.now() + (long.expires_in || 5184000) * 1000)
+        await db.collection('instagram_accounts').updateOne(
+          { workspace_id: stateUser.workspace_id },
+          {
+            $set: {
+              workspace_id: stateUser.workspace_id,
+              ig_user_id: String(profile.id || short.user_id),
+              ig_username: profile.username || null,
+              account_type: profile.account_type || null,
+              profile_picture_url: profile.profile_picture_url || null,
+              access_token: long.access_token,
+              token_expires_at: expiresAt,
+              updated_at: new Date(),
+              permissions: short.permissions || null,
+            },
+            $setOnInsert: { id: uuidv4(), connected_at: new Date() },
+          },
+          { upsert: true }
+        )
+        return redirectWithStatus('connected')
+      } catch (e) {
+        console.error('IG OAuth callback failed:', e)
+        return redirectWithStatus(`error&reason=${encodeURIComponent(String(e.message || e).slice(0, 80))}`)
+      }
+    }
+
+    // ---- META: DEAUTHORIZE CALLBACK (PUBLIC) ----
+    // Meta calls this when a user removes our app from their Instagram authorized-apps list.
+    // We must drop their access token and connection record within 24 hrs.
+    if (route === '/auth/instagram/deauthorize' && method === 'POST') {
+      const form = await request.formData().catch(() => null)
+      const signed = form?.get('signed_request')
+      const payload = signed ? parseSignedRequest({ signedRequest: String(signed), crypto }) : null
+      if (!payload?.user_id) {
+        console.warn('Deauthorize callback: missing or invalid signed_request')
+        return NextResponse.json({ ok: true })
+      }
+      const result = await db.collection('instagram_accounts').deleteMany({ ig_user_id: String(payload.user_id) })
+      console.log(`Instagram deauthorize: removed ${result.deletedCount} account(s) for ig_user_id=${payload.user_id}`)
+      return NextResponse.json({ ok: true, deleted: result.deletedCount })
+    }
+
+    // ---- META: DATA DELETION REQUEST (PUBLIC) ----
+    // Meta calls this when a user requests their data be deleted. We must respond with
+    // a confirmation code + status URL, and actually delete the data.
+    if (route === '/auth/instagram/delete' && method === 'POST') {
+      const form = await request.formData().catch(() => null)
+      const signed = form?.get('signed_request')
+      const payload = signed ? parseSignedRequest({ signedRequest: String(signed), crypto }) : null
+      if (!payload?.user_id) {
+        console.warn('Data deletion callback: missing or invalid signed_request')
+        return NextResponse.json({ ok: false, error: 'invalid_signed_request' }, { status: 400 })
+      }
+      const confirmationCode = `del-${uuidv4()}`
+      const igUserId = String(payload.user_id)
+      // Find affected workspace(s) before deleting so we can mark conversations referencing this IG user.
+      const accts = await db.collection('instagram_accounts').find({ ig_user_id: igUserId }).toArray()
+      const workspaceIds = accts.map((a) => a.workspace_id)
+      // Drop tokens / IG account record
+      await db.collection('instagram_accounts').deleteMany({ ig_user_id: igUserId })
+      // Drop Meta-side webhook events referencing this user (best-effort by payload search)
+      await db.collection('meta_webhook_events').deleteMany({
+        $or: [
+          { 'payload.entry.changes.value.from.id': igUserId },
+          { 'payload.entry.messaging.sender.id': igUserId },
+        ],
+      })
+      // Log a deletion record so we can answer status queries later
+      await db.collection('data_deletion_requests').insertOne({
+        id: uuidv4(),
+        confirmation_code: confirmationCode,
+        ig_user_id: igUserId,
+        affected_workspaces: workspaceIds,
+        requested_at: new Date(),
+        status: 'completed',
+      })
+      const statusUrl = `${baseUrl(request)}/data-deletion?code=${encodeURIComponent(confirmationCode)}`
+      return NextResponse.json({ url: statusUrl, confirmation_code: confirmationCode })
+    }
+
+    // ---- META WEBHOOK (PUBLIC, NO AUTH) ----
+    // GET = verification handshake. Meta sends ?hub.mode=subscribe&hub.challenge=...&hub.verify_token=...
+    if (route === '/webhooks/meta' && method === 'GET') {
+      const url = new URL(request.url)
+      const mode = url.searchParams.get('hub.mode')
+      const token = url.searchParams.get('hub.verify_token')
+      const challenge = url.searchParams.get('hub.challenge')
+      if (mode === 'subscribe' && token && token === process.env.META_VERIFY_TOKEN) {
+        return new NextResponse(challenge, { status: 200, headers: { 'Content-Type': 'text/plain' } })
+      }
+      console.warn('Meta webhook GET verification failed', { mode, token_provided: !!token })
+      return new NextResponse('forbidden', { status: 403 })
+    }
+    // POST = real event from Meta. Verify HMAC signature, log, then route Instagram comments → campaigns + DM.
+    if (route === '/webhooks/meta' && method === 'POST') {
+      const rawBody = await request.text()
+      const signature = request.headers.get('x-hub-signature-256')
+      if (!verifyMetaWebhookSignature({ rawBody, signatureHeader: signature, crypto })) {
+        console.warn('Meta webhook invalid signature')
+        return new NextResponse('invalid_signature', { status: 401 })
+      }
+      let payload
+      try {
+        payload = JSON.parse(rawBody)
+      } catch (e) {
+        return new NextResponse('bad_json', { status: 400 })
+      }
+      await db.collection('meta_webhook_events').insertOne({
+        id: uuidv4(),
+        received_at: new Date(),
+        payload,
+      })
+
+      /** @type {any[]} */
+      const results = []
+      const comments = extractInstagramCommentChanges(payload)
+      if (comments.length === 0) {
+        const ex = metaWebhookCommentsExtractionHint(payload, 0)
+        console.warn('[meta webhook] Parsed 0 comment events', JSON.stringify(ex))
+      }
+      for (const evt of comments) {
+        try {
+          const r = await processInstagramCommentWebhookEvent(db, evt)
+          results.push(r)
+        } catch (err) {
+          console.error('processInstagramCommentWebhookEvent', err)
+          results.push({ error: String(err?.message || err).slice(0, 120) })
+        }
+      }
+
+      const extractionHint =
+        process.env.META_WEBHOOK_DEBUG === '1'
+          ? metaWebhookCommentsExtractionHint(payload, comments.length)
+          : undefined
+
+      return NextResponse.json({
+        ok: true,
+        comment_events_seen: comments.length,
+        results,
+        ...(extractionHint ? { extraction_hint: extractionHint } : {}),
+      })
     }
 
     // ---- RAZORPAY WEBHOOK (PUBLIC, NO AUTH) ----
@@ -308,7 +781,8 @@ async function handleRoute(request, { params }) {
       const rawBody = await request.text()
       const signature = request.headers.get('x-razorpay-signature')
       const eventId = request.headers.get('x-razorpay-event-id')
-      if (!verifyRazorpayWebhook(rawBody, signature)) {
+      const verified = await verifyAndIdentifyRazorpayWebhook(db, rawBody, signature)
+      if (!verified.ok) {
         console.warn('Razorpay webhook invalid signature')
         return handleCORS(NextResponse.json({ error: 'invalid_signature' }, { status: 401 }))
       }
@@ -320,7 +794,52 @@ async function handleRoute(request, { params }) {
       }
       let payload
       try { payload = JSON.parse(rawBody) } catch (e) { return handleCORS(NextResponse.json({ error: 'bad_json' }, { status: 400 })) }
-      if (payload.event === 'payment_link.paid') {
+      const event = payload.event
+
+      // ---- SUBSCRIPTION EVENTS (SaaS billing) ----
+      if (event && event.startsWith('subscription.')) {
+        const sub = payload.payload?.subscription?.entity
+        if (sub?.id) {
+          const planFromNotes = sub.notes?.app_plan
+          const userId = sub.notes?.user_id
+          // Find user by subscription_id (set during checkout) or fallback to notes
+          let userDoc = await db.collection('users').findOne({ subscription_id: sub.id })
+          if (!userDoc && userId) userDoc = await db.collection('users').findOne({ id: userId })
+          if (userDoc) {
+            const set = {
+              subscription_id: sub.id,
+              subscription_status: SUBSCRIPTION_STATES[sub.status] || sub.status,
+              updated_at: new Date(),
+            }
+            // Plan activates only when subscription is actually billing.
+            if (['active', 'authenticated'].includes(sub.status) && planFromNotes) {
+              set.plan = planFromNotes
+              set.subscription_pending_plan = null
+            }
+            if (sub.current_end) set.current_period_end = new Date(sub.current_end * 1000)
+            if (['cancelled', 'expired', 'completed'].includes(sub.status)) {
+              set.plan = 'free'
+              set.cancel_at_period_end = false
+            }
+            await db.collection('users').updateOne({ id: userDoc.id }, { $set: set })
+            console.log(`[billing] ${event} -> user=${userDoc.email} plan=${set.plan || userDoc.plan} status=${set.subscription_status}`)
+          } else {
+            console.warn(`[billing] ${event} for unknown subscription ${sub.id}`)
+          }
+        }
+        await db.collection('billing_events').insertOne({
+          id: uuidv4(),
+          event,
+          subscription_id: sub?.id,
+          status: sub?.status,
+          received_at: new Date(),
+          payload,
+        })
+        return handleCORS(NextResponse.json({ ok: true, handled: event }))
+      }
+
+      // ---- ONE-TIME PAYMENT LINK EVENTS (legacy per-workspace in-DM flow) ----
+      if (event === 'payment_link.paid') {
         const ent = payload.payload?.payment_link?.entity
         const refId = ent?.reference_id || ''
         const amountInr = (ent?.amount_paid || ent?.amount || 0) / 100
@@ -336,7 +855,6 @@ async function handleRoute(request, { params }) {
               { id: convo.campaign_id },
               { $inc: { 'stats.conversions': 1 } }
             )
-            // Add a system message into conversation for visibility
             await db.collection('messages').insertOne({
               id: uuidv4(),
               conversation_id: convoId,
@@ -361,8 +879,15 @@ async function handleRoute(request, { params }) {
     if (route === '/agent' && method === 'GET') {
       const a = await db.collection('agents').findOne({ workspace_id: WS })
       if (!a) return handleCORS(NextResponse.json({ error: 'no_agent' }, { status: 404 }))
-      const { _id, ...rest } = a
-      return handleCORS(NextResponse.json(rest))
+      const { _id, razorpay_key_secret_enc, razorpay_webhook_secret_enc, ...rest } = a
+      // Never return raw secrets - only masked previews + connected flag
+      const out = {
+        ...rest,
+        razorpay_connected: !!(a.razorpay_key_id && razorpay_key_secret_enc),
+        razorpay_key_id_masked: a.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
+        razorpay_webhook_configured: !!razorpay_webhook_secret_enc,
+      }
+      return handleCORS(NextResponse.json(out))
     }
     if (route === '/agent' && (method === 'POST' || method === 'PUT')) {
       const b = await request.json()
@@ -387,8 +912,259 @@ async function handleRoute(request, { params }) {
         await db.collection('users').updateOne({ id: user.id }, { $set: { business_name: b.business_name } })
       }
       const a = await db.collection('agents').findOne({ workspace_id: WS })
-      const { _id, ...rest } = a
-      return handleCORS(NextResponse.json(rest))
+      const { _id, razorpay_key_secret_enc, razorpay_webhook_secret_enc, ...rest } = a
+      return handleCORS(NextResponse.json({
+        ...rest,
+        razorpay_connected: !!(a.razorpay_key_id && razorpay_key_secret_enc),
+        razorpay_key_id_masked: a.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
+        razorpay_webhook_configured: !!razorpay_webhook_secret_enc,
+      }))
+    }
+
+    // =================================================================
+    // BILLING - SaaS subscriptions (Razorpay Subscriptions API)
+    // =================================================================
+    // Returns the current user's plan, status, and (if active) period end.
+    if (route === '/billing/status' && method === 'GET') {
+      const u = await db.collection('users').findOne({ id: user.id })
+      const planId = u?.plan || DEFAULT_PLAN
+      const plan = getPlan(planId)
+
+      // Compute current-month usage counts for the UsageBar in the sidebar.
+      const startOfMonth = new Date()
+      startOfMonth.setUTCDate(1)
+      startOfMonth.setUTCHours(0, 0, 0, 0)
+      let dmsUsed = 0
+      let leadsUsed = 0
+      try {
+        const wsId = user.workspace_id
+        dmsUsed = await db.collection('messages').countDocuments({
+          workspace_id: wsId,
+          direction: 'out',
+          created_at: { $gte: startOfMonth.toISOString() },
+        })
+        leadsUsed = await db.collection('leads').countDocuments({ workspace_id: wsId })
+      } catch (_) {}
+
+      return handleCORS(NextResponse.json({
+        plan: planId,
+        plan_name: plan.name,
+        price: plan.price,
+        status: u?.subscription_status || (planId === 'free' ? 'active' : 'inactive'),
+        subscription_id: u?.subscription_id || null,
+        current_period_end: u?.current_period_end || null,
+        cancel_at_period_end: !!u?.cancel_at_period_end,
+        limits: {
+          ...plan.limits,
+          dms_per_month: plan.limits?.monthly_dms ?? 0,
+          dms_used: dmsUsed,
+          contacts: plan.limits?.monthly_dms ?? 0, // best-available proxy until contact-cap is modeled
+          contacts_used: leadsUsed,
+        },
+        platform_configured: !!getPlatformRazorpayCreds(),
+      }))
+    }
+
+    // Start a checkout - creates a Razorpay subscription, returns short_url for the
+    // user's browser to redirect to. Razorpay handles the hosted checkout page.
+    if (route === '/billing/checkout' && method === 'POST') {
+      const b = await request.json().catch(() => ({}))
+      const planId = b.plan
+      if (!planId || !PLANS[planId]) {
+        return handleCORS(NextResponse.json({ error: 'invalid_plan' }, { status: 400 }))
+      }
+      if (planId === 'free') {
+        // Downgrade to free: cancel any active subscription, set plan back to free.
+        const u = await db.collection('users').findOne({ id: user.id })
+        if (u?.subscription_id) {
+          try {
+            await razorpayApi(`/v1/subscriptions/${u.subscription_id}/cancel`, {
+              method: 'POST',
+              body: { cancel_at_cycle_end: 1 },
+            })
+          } catch (e) {
+            console.warn('Cancel-on-downgrade failed (continuing):', e.message)
+          }
+        }
+        await db.collection('users').updateOne(
+          { id: user.id },
+          { $set: { plan: 'free', subscription_status: 'active', cancel_at_period_end: true, updated_at: new Date() } }
+        )
+        return handleCORS(NextResponse.json({ ok: true, plan: 'free', short_url: null }))
+      }
+
+      if (!getPlatformRazorpayCreds()) {
+        return handleCORS(NextResponse.json({
+          error: 'platform_not_configured',
+          details: 'Platform owner needs to set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET env vars.',
+        }, { status: 503 }))
+      }
+      const razorpayPlanId = getRazorpayPlanId(planId)
+      if (!razorpayPlanId) {
+        return handleCORS(NextResponse.json({
+          error: 'plan_not_configured',
+          details: `Platform owner needs to create a Plan in Razorpay dashboard and set the ${PLANS[planId].razorpay_plan_env} env var.`,
+        }, { status: 503 }))
+      }
+
+      try {
+        // total_count = 12 means subscription bills monthly for 12 months then auto-renews
+        // (Razorpay requires a finite cycle count; pick a long horizon).
+        const subscription = await razorpayApi('/v1/subscriptions', {
+          method: 'POST',
+          body: {
+            plan_id: razorpayPlanId,
+            customer_notify: 1,
+            quantity: 1,
+            total_count: 120, // 10 years monthly
+            notes: {
+              user_id: user.id,
+              workspace_id: user.workspace_id,
+              app_plan: planId,
+              email: user.email,
+            },
+          },
+        })
+        // Record the pending subscription so the webhook can match it to this user
+        // even before the user is redirected back.
+        await db.collection('users').updateOne(
+          { id: user.id },
+          {
+            $set: {
+              subscription_id: subscription.id,
+              subscription_pending_plan: planId,
+              subscription_status: SUBSCRIPTION_STATES[subscription.status] || 'pending',
+              updated_at: new Date(),
+            },
+          }
+        )
+        return handleCORS(NextResponse.json({
+          subscription_id: subscription.id,
+          short_url: subscription.short_url,
+          status: subscription.status,
+        }))
+      } catch (e) {
+        console.error('Subscription create failed:', e.message, e.payload)
+        const reason = e.payload?.error?.description || e.message
+        return handleCORS(NextResponse.json({
+          error: 'subscription_create_failed',
+          details: reason,
+        }, { status: 502 }))
+      }
+    }
+
+    // Cancel the user's subscription. Default: cancel at period end (no refund, no immediate downgrade).
+    if (route === '/billing/cancel' && method === 'POST') {
+      const u = await db.collection('users').findOne({ id: user.id })
+      if (!u?.subscription_id) {
+        return handleCORS(NextResponse.json({ error: 'no_active_subscription' }, { status: 400 }))
+      }
+      try {
+        const result = await razorpayApi(`/v1/subscriptions/${u.subscription_id}/cancel`, {
+          method: 'POST',
+          body: { cancel_at_cycle_end: 1 },
+        })
+        await db.collection('users').updateOne(
+          { id: user.id },
+          { $set: { cancel_at_period_end: true, subscription_status: 'active', updated_at: new Date() } }
+        )
+        return handleCORS(NextResponse.json({
+          ok: true,
+          status: result.status,
+          ends_at: result.current_end ? new Date(result.current_end * 1000) : null,
+        }))
+      } catch (e) {
+        console.error('Cancel failed:', e.message, e.payload)
+        return handleCORS(NextResponse.json({
+          error: 'cancel_failed',
+          details: e.payload?.error?.description || e.message,
+        }, { status: 502 }))
+      }
+    }
+
+    // =================================================================
+    // RAZORPAY - per-workspace (legacy / unused in current SaaS model)
+    // =================================================================
+    if (route === '/razorpay/status' && method === 'GET') {
+      const a = await db.collection('agents').findOne({ workspace_id: WS })
+      return handleCORS(NextResponse.json({
+        connected: !!(a?.razorpay_key_id && a?.razorpay_key_secret_enc),
+        key_id_masked: a?.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
+        mode: a?.razorpay_mode || (a?.razorpay_key_id?.startsWith('rzp_live_') ? 'live' : 'test'),
+        webhook_configured: !!a?.razorpay_webhook_secret_enc,
+      }))
+    }
+    if (route === '/razorpay/connect' && method === 'POST') {
+      const b = await request.json().catch(() => ({}))
+      const keyId = (b.key_id || '').trim()
+      const keySecret = (b.key_secret || '').trim()
+      const webhookSecret = (b.webhook_secret || '').trim() // optional
+      if (!keyId || !keySecret) {
+        return handleCORS(NextResponse.json({ error: 'missing_keys' }, { status: 400 }))
+      }
+      if (!/^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId)) {
+        return handleCORS(NextResponse.json({ error: 'invalid_key_id_format' }, { status: 400 }))
+      }
+      // Best-effort verification: hit Razorpay's read-only endpoint to confirm
+      // the keys are valid. We distinguish three cases:
+      //   1. Probe succeeds (2xx)         -> verified=true
+      //   2. Razorpay rejects (401/403)   -> bad keys -> fail loudly
+      //   3. Network/TLS failure locally  -> can't tell; save anyway with verified=false
+      //      (common when a corporate proxy or antivirus intercepts TLS).
+      // The real payment-link creation happens later; bad keys will surface then.
+      let verified = false
+      let verifyWarning = null
+      try {
+        const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64')
+        const probe = await fetch('https://api.razorpay.com/v1/payments?count=1', {
+          headers: { Authorization: `Basic ${auth}` },
+        })
+        if (probe.status === 401 || probe.status === 403) {
+          const j = await probe.json().catch(() => ({}))
+          return handleCORS(NextResponse.json({
+            error: 'razorpay_auth_failed',
+            details: j?.error?.description || `Razorpay rejected these keys (HTTP ${probe.status}). Double-check that you copied them correctly.`,
+          }, { status: 400 }))
+        }
+        if (probe.ok) {
+          verified = true
+        } else {
+          verifyWarning = `Razorpay returned HTTP ${probe.status} during verification. Saved anyway.`
+        }
+      } catch (e) {
+        // Network/TLS failure -- save anyway, the real flow will catch real key errors.
+        verifyWarning = `Could not verify keys with Razorpay (likely a local network/TLS proxy): ${e.message}. Keys saved anyway; we will try them on the first real payment link.`
+        console.warn('[razorpay/connect] verify probe failed, saving without verification:', e.message)
+      }
+      const mode = keyId.startsWith('rzp_live_') ? 'live' : 'test'
+      const set = {
+        razorpay_key_id: keyId,
+        razorpay_key_secret_enc: encryptSecret(keySecret),
+        razorpay_mode: mode,
+        razorpay_connected_at: new Date(),
+        updated_at: new Date(),
+      }
+      if (webhookSecret) set.razorpay_webhook_secret_enc = encryptSecret(webhookSecret)
+      await db.collection('agents').updateOne(
+        { workspace_id: WS },
+        { $set: set, $setOnInsert: { id: uuidv4(), workspace_id: WS, created_at: new Date() } },
+        { upsert: true }
+      )
+      return handleCORS(NextResponse.json({
+        connected: true,
+        key_id_masked: maskSecret(keyId),
+        mode,
+        webhook_configured: !!webhookSecret,
+        verified,
+        warning: verifyWarning,
+      }))
+    }
+    if (route === '/razorpay/disconnect' && method === 'POST') {
+      await db.collection('agents').updateOne(
+        { workspace_id: WS },
+        { $unset: { razorpay_key_id: '', razorpay_key_secret_enc: '', razorpay_webhook_secret_enc: '', razorpay_mode: '', razorpay_connected_at: '' }, $set: { updated_at: new Date() } }
+      )
+      return handleCORS(NextResponse.json({ connected: false }))
     }
 
     // ---- CAMPAIGNS ----
@@ -404,6 +1180,9 @@ async function handleRoute(request, { params }) {
         post_caption: b.post_caption || '',
         post_image_url: b.post_image_url || 'https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=800&q=80',
         keyword: (b.keyword || '').toUpperCase().trim(),
+        instagram_media_id: typeof b.instagram_media_id === 'string' && b.instagram_media_id.trim()
+          ? b.instagram_media_id.trim()
+          : null,
         dm_template: b.dm_template || 'Hey {{handle}}! Thanks for the comment 💜 What can I help you with?',
         enabled: b.enabled !== false,
         stats: { triggers: 0, conversions: 0 },
@@ -428,27 +1207,18 @@ async function handleRoute(request, { params }) {
       const commentText = b.comment_text || ''
       const matched = camp.keyword && commentText.toUpperCase().includes(camp.keyword)
       if (!matched) {
-        return handleCORS(NextResponse.json({ matched: false, message: `Keyword "${camp.keyword}" not detected.` }))
+        return handleCORS(
+          NextResponse.json({ matched: false, message: `Keyword "${camp.keyword}" not detected.` }),
+        )
       }
-      const leadId = uuidv4()
-      const lead = {
-        id: leadId, workspace_id: WS, handle, source: 'instagram_comment',
-        campaign_id: camp.id, stage: 'new', score: 'warm', revenue: 0,
-        created_at: new Date(), updated_at: new Date(),
-      }
-      await db.collection('leads').insertOne(lead)
-      const convoId = uuidv4()
-      const dmText = (camp.dm_template || '').replaceAll('{{handle}}', handle)
-      await db.collection('conversations').insertOne({
-        id: convoId, workspace_id: WS, lead_id: leadId, handle, campaign_id: camp.id,
-        last_message: dmText, last_role: 'agent', unread: 1, created_at: new Date(), updated_at: new Date(),
+      const { leadId, convoId, dmText } = await createCommentTriggeredConversation(db, WS, camp, {
+        commentText,
+        handle,
+        meta: { post_caption: camp.post_caption, simulator: true },
       })
-      await db.collection('messages').insertMany([
-        { id: uuidv4(), conversation_id: convoId, role: 'comment', text: commentText, ts: new Date(), meta: { post_caption: camp.post_caption } },
-        { id: uuidv4(), conversation_id: convoId, role: 'agent', text: dmText, ts: new Date(), meta: { is_initial_dm: true } },
-      ])
-      await db.collection('campaigns').updateOne({ id: camp.id }, { $inc: { 'stats.triggers': 1 } })
-      return handleCORS(NextResponse.json({ matched: true, lead_id: leadId, conversation_id: convoId, dm_text: dmText }))
+      return handleCORS(
+        NextResponse.json({ matched: true, lead_id: leadId, conversation_id: convoId, dm_text: dmText }),
+      )
     }
 
     // ---- CONVERSATIONS ----
@@ -510,6 +1280,8 @@ async function handleRoute(request, { params }) {
         if (a.type === 'share_payment_link' && a.amount) {
           try {
             const link = await createRazorpayLink({
+              db,
+              workspaceId: WS,
               amount: Number(a.amount),
               label: a.label || 'Service',
               conversationId: convoId,
@@ -517,8 +1289,11 @@ async function handleRoute(request, { params }) {
             })
             enrichedActions.push({ ...a, link })
           } catch (e) {
-            console.error('Razorpay link failed', e)
-            enrichedActions.push({ ...a, link_error: 'Could not generate payment link' })
+            const reason = e.message === 'razorpay_not_configured'
+              ? 'Razorpay not connected. Go to Settings → Razorpay to add your keys.'
+              : 'Could not generate payment link.'
+            console.error('Razorpay link failed', e.message)
+            enrichedActions.push({ ...a, link_error: reason })
           }
         } else if (a.type === 'share_booking_link') {
           enrichedActions.push({ ...a, url: agent?.booking_link })
@@ -602,6 +1377,37 @@ async function handleRoute(request, { params }) {
         total_conversations: convs, total_leads: leads.length, total_messages: msgs, total_campaigns: camps.length,
         comment_triggers: triggers, revenue, converted, conversion_rate, stages, top_campaigns,
       }))
+    }
+
+    // ---- INSTAGRAM CONNECT / STATUS / DISCONNECT ----
+    if (route === '/instagram/status' && method === 'GET') {
+      const acct = await db.collection('instagram_accounts').findOne({ workspace_id: WS })
+      return handleCORS(NextResponse.json({
+        configured: isInstagramConfigured(),
+        connected: !!acct,
+        ig_username: acct?.ig_username || null,
+        ig_user_id: acct?.ig_user_id || null,
+        account_type: acct?.account_type || null,
+        profile_picture_url: acct?.profile_picture_url || null,
+        connected_at: acct?.connected_at || null,
+        token_expires_at: acct?.token_expires_at || null,
+      }))
+    }
+
+    // Kick off OAuth: redirect the browser to instagram.com authorize page.
+    if (route === '/instagram/connect' && method === 'GET') {
+      if (!isInstagramConfigured()) {
+        return handleCORS(NextResponse.json({ error: 'ig_not_configured', detail: 'Set META_INSTAGRAM_APP_ID + META_INSTAGRAM_APP_SECRET (Instagram API setup page), or META_APP_ID + META_APP_SECRET, in .env — then restart.' }, { status: 400 }))
+      }
+      const redirectUri = `${baseUrl(request)}/api/auth/instagram/callback`
+      const state = jwt.sign({ uid: user.id, n: uuidv4() }, process.env.JWT_SECRET, { expiresIn: '10m' })
+      const url = buildAuthorizeUrl({ redirectUri, state })
+      return NextResponse.redirect(url)
+    }
+
+    if (route === '/instagram/disconnect' && method === 'POST') {
+      await db.collection('instagram_accounts').deleteOne({ workspace_id: WS })
+      return handleCORS(NextResponse.json({ ok: true }))
     }
 
     return handleCORS(NextResponse.json({ error: `Route ${route} not found` }, { status: 404 }))
