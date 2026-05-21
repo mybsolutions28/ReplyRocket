@@ -51,7 +51,11 @@ export default function PricingPage() {
   }, [me])
 
   const subscribe = async (planId) => {
-    if (!me) {
+    if (me === undefined) {
+      toast.message('Checking your session… try again in a second.')
+      return
+    }
+    if (me === null) {
       // Anonymous → push them to sign up first, remember intent.
       localStorage.setItem('rr_pending_plan', planId)
       window.location.href = '/?from=pricing&plan=' + encodeURIComponent(planId)
@@ -168,7 +172,7 @@ export default function PricingPage() {
                   </ul>
                   <Button
                     onClick={() => subscribe(planId)}
-                    disabled={busyPlan === planId || isCurrent}
+                    disabled={me === undefined || busyPlan === planId || isCurrent}
                     className={`w-full ${plan.popular ? 'bg-gradient-to-r from-violet-600 to-fuchsia-500 text-white' : isCurrent ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100' : 'bg-slate-900 text-white hover:bg-slate-800'}`}
                   >
                     {busyPlan === planId ? (

@@ -183,23 +183,35 @@ async function getUser(request, db) {
   } catch (e) { return null }
 }
 
-function setAuthCookie(response, token) {
+function authCookieOptions() {
   // `secure: true` blocks cookie over http://localhost. Auto-enable only on
   // explicit HTTPS deployment (NEXT_PUBLIC_BASE_URL=https://...) or NODE_ENV=production.
   const isHttps = (process.env.NEXT_PUBLIC_BASE_URL || '').startsWith('https://')
   const secure = isHttps || process.env.NODE_ENV === 'production'
-  response.cookies.set(COOKIE_NAME, token, {
+  const opts = {
     httpOnly: true,
     sameSite: 'lax',
     secure,
     path: '/',
     maxAge: TOKEN_TTL,
-  })
+  }
+  // Share session between www.replyrocket.site and replyrocket.site (apex redirect).
+  try {
+    const host = new URL(process.env.NEXT_PUBLIC_BASE_URL || '').hostname
+    if (host === 'replyrocket.site' || host === 'www.replyrocket.site') {
+      opts.domain = '.replyrocket.site'
+    }
+  } catch (_) { /* ignore invalid NEXT_PUBLIC_BASE_URL */ }
+  return opts
+}
+
+function setAuthCookie(response, token) {
+  response.cookies.set(COOKIE_NAME, token, authCookieOptions())
   return response
 }
 
 function clearAuthCookie(response) {
-  response.cookies.set(COOKIE_NAME, '', { httpOnly: true, path: '/', maxAge: 0 })
+  response.cookies.set(COOKIE_NAME, '', { ...authCookieOptions(), maxAge: 0 })
   return response
 }
 
