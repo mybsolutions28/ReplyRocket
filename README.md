@@ -33,7 +33,7 @@ ReplyRocket is a production-ready, multi-tenant AI sales platform that:
 
 ## 🔐 Required environment variables
 
-Copy `.env.example` to `.env` (or set in your hosting provider):
+Copy [`.env.example`](./.env.example) to `.env` (or set the same keys in your hosting provider):
 
 ```bash
 # Database
@@ -41,7 +41,7 @@ MONGO_URL=mongodb://localhost:27017
 DB_NAME=replyrocket
 
 # App
-NEXT_PUBLIC_BASE_URL=https://your-domain.com
+NEXT_PUBLIC_BASE_URL=https://replyrocket.site
 CORS_ORIGINS=*
 
 # AI (Claude Sonnet 4.5 via Emergent Universal Key)
@@ -66,7 +66,7 @@ After deploying, configure Razorpay to notify ReplyRocket when a payment is capt
 
 1. Sign in to your **Razorpay Dashboard** → switch to **Test Mode** (top right toggle)
 2. **Account & Settings → Webhooks → Add New Webhook**
-3. **Webhook URL**: `https://YOUR_DOMAIN/api/webhooks/razorpay`
+3. **Webhook URL**: `https://replyrocket.site/api/webhooks/razorpay`
 4. **Secret**: paste the same value as your `RAZORPAY_WEBHOOK_SECRET` env var
 5. **Active Events**: select ✅ `payment_link.paid`
 6. Save — Razorpay will send a test ping
@@ -108,6 +108,25 @@ yarn start # serves on port 3000
 ```
 
 Use a process manager (pm2, systemd, supervisor) and put nginx in front for HTTPS.
+
+### Option D — Docker Compose (MongoDB + app)
+
+1. Copy `.env.example` → `.env` and fill secrets (`JWT_SECRET`, `NEXT_PUBLIC_BASE_URL`, Meta/Razorpay keys, etc.).
+2. **`NEXT_PUBLIC_BASE_URL` is baked in at Docker build time.** Build with your real HTTPS origin, for example:
+
+   ```bash
+   docker compose build --build-arg NEXT_PUBLIC_BASE_URL=https://replyrocket.site
+   ```
+
+   Or put `NEXT_PUBLIC_BASE_URL=https://replyrocket.site` in `.env` and run `docker compose build` (Compose passes it as a build arg).
+
+3. `docker compose up -d` — app on port **3000**, MongoDB internal only (persistent volume `mongo_data`).
+4. TLS + forwarded headers: adapt `deploy/nginx.replyrocket.example.conf` (terminate HTTPS on nginx; proxy to `127.0.0.1:3000`).
+5. Print exact webhook/OAuth URLs for Meta & Razorpay:
+
+   ```bash
+   npm run deploy:urls -- https://replyrocket.site
+   ```
 
 ---
 

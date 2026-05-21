@@ -14,7 +14,6 @@ import {
   parseSignedRequest,
   sendDirectMessage,
 } from '@/lib/instagram'
-import { encryptSecret, decryptSecret, maskSecret } from '@/lib/crypto-secrets'
 import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
 import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
 import { extractInstagramCommentChanges, metaWebhookCommentsExtractionHint } from '@/lib/meta-instagram-webhook'
@@ -94,7 +93,13 @@ async function connectToMongo() {
     db = null
   }
 
-  const nextClient = new MongoClient(uri)
+  const mongoClientOptions = {}
+  // Local Windows: SRV DNS or TLS inspection often fails; set MONGO_TLS_INSECURE=1 in .env only.
+  if (process.env.MONGO_TLS_INSECURE === '1') {
+    mongoClientOptions.tlsAllowInvalidCertificates = true
+  }
+
+  const nextClient = new MongoClient(uri, mongoClientOptions)
   try {
     await nextClient.connect()
     const nextDb = nextClient.db(ATLAS_DB_NAME)
@@ -295,7 +300,7 @@ UPI / Payment ID: ${a.upi_id || '(not set)'}
 1. Qualify the lead — ask 1 short, smart question if needed.
 2. Recommend the best service for their need.
 3. Handle objections naturally.
-4. CLOSE — share booking link or generate a payment link when intent is clear.
+4. CLOSE — share booking link or UPI/payment ID when intent is clear (no in-app payment links).
 5. Keep replies SHORT (2-4 sentences). 1-2 emojis max. Sound human.
 6. Never invent prices, services, or facts not listed above.
 
@@ -308,12 +313,11 @@ Return JSON:
   "lead_stage": "<new|interested|qualified|negotiation|converted|lost>",
   "actions": [
     { "type": "share_booking_link" },
-    { "type": "share_payment_link", "amount": <number_in_inr>, "label": "<service name>" },
     { "type": "share_pricing" }
   ]
 }
 
-Use "share_payment_link" only when user has clearly agreed to buy a specific service. Return ONLY the JSON.`
+Return ONLY the JSON.`
 }
 
 function parseJSON(text) {
@@ -453,87 +457,13 @@ async function razorpayApi(path, { method = 'GET', body } = {}) {
   return data
 }
 
-// =====================================================================
-// RAZORPAY - PER-WORKSPACE (legacy, kept for future in-DM payments)
-// =====================================================================
-// Per-workspace credentials: each customer brings their own Razorpay account
-// (multi-tenant SaaS). The webhook secret can be global (one URL for all
-// tenants) OR per-tenant. We default to per-tenant, with env fallback.
-async function getRazorpayCreds(db, workspaceId) {
-  const a = await db.collection('agents').findOne({ workspace_id: workspaceId })
-  if (!a?.razorpay_key_id || !a?.razorpay_key_secret_enc) return null
-  return {
-    keyId: a.razorpay_key_id,
-    keySecret: decryptSecret(a.razorpay_key_secret_enc),
-    webhookSecret: a.razorpay_webhook_secret_enc ? decryptSecret(a.razorpay_webhook_secret_enc) : null,
-    mode: a.razorpay_mode || (a.razorpay_key_id?.startsWith('rzp_live_') ? 'live' : 'test'),
-  }
-}
-
-async function createRazorpayLink({ db, workspaceId, amount, label, conversationId, leadHandle }) {
-  const creds = await getRazorpayCreds(db, workspaceId)
-  if (!creds?.keyId || !creds?.keySecret) throw new Error('razorpay_not_configured')
-  const { keyId, keySecret } = creds
-  const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64')
-  const payload = {
-    amount: Math.round(Number(amount) * 100),
-    currency: 'INR',
-    accept_partial: false,
-    reference_id: `convo_${conversationId}`.slice(0, 40),
-    description: (label || 'Payment').slice(0, 2048),
-    customer: {
-      name: (leadHandle || 'Customer').replace('@', '').slice(0, 50) || 'Customer',
-      email: 'customer@example.com',
-      contact: '+919876543210',
-    },
-    notify: { sms: false, email: false },
-    reminder_enable: false,
-  }
-  const resp = await fetch('https://api.razorpay.com/v1/payment_links', {
-    method: 'POST',
-    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  const text = await resp.text()
-  if (!resp.ok) {
-    console.error('Razorpay error:', resp.status, text)
-    throw new Error(`Razorpay link creation failed: ${resp.status}`)
-  }
-  const data = JSON.parse(text)
-  return { id: data.id, short_url: data.short_url, amount: amount, label }
-}
-
-function verifyRazorpayWebhookWithSecret(rawBody, signature, secret) {
+function verifyRazorpaySubscriptionWebhook(rawBody, signature) {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET
   if (!signature || !secret) return false
   const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex')
   try {
     return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))
   } catch (e) { return false }
-}
-
-// Try each workspace's webhook secret until one verifies. This lets multiple
-// tenants share the same /api/webhooks/razorpay URL (e.g. on Vercel), each
-// having configured Razorpay → Webhooks with their own secret.
-// We also fall back to a global RAZORPAY_WEBHOOK_SECRET env if set.
-async function verifyAndIdentifyRazorpayWebhook(db, rawBody, signature) {
-  if (!signature) return { ok: false }
-  // Global env fallback first (cheapest)
-  const globalSecret = process.env.RAZORPAY_WEBHOOK_SECRET
-  if (globalSecret && verifyRazorpayWebhookWithSecret(rawBody, signature, globalSecret)) {
-    return { ok: true, source: 'global' }
-  }
-  // Per-tenant secrets stored encrypted in agents collection
-  const agents = await db.collection('agents').find(
-    { razorpay_webhook_secret_enc: { $exists: true, $ne: '' } },
-    { projection: { workspace_id: 1, razorpay_webhook_secret_enc: 1 } },
-  ).toArray()
-  for (const a of agents) {
-    const secret = decryptSecret(a.razorpay_webhook_secret_enc)
-    if (verifyRazorpayWebhookWithSecret(rawBody, signature, secret)) {
-      return { ok: true, source: 'tenant', workspace_id: a.workspace_id }
-    }
-  }
-  return { ok: false }
 }
 
 // =====================================================================
@@ -784,12 +714,19 @@ async function handleRoute(request, { params }) {
     if (route === '/webhooks/meta' && method === 'GET') {
       const url = new URL(request.url)
       const mode = url.searchParams.get('hub.mode')
-      const token = url.searchParams.get('hub.verify_token')
+      const token = (url.searchParams.get('hub.verify_token') || '').trim()
       const challenge = url.searchParams.get('hub.challenge')
-      if (mode === 'subscribe' && token && token === process.env.META_VERIFY_TOKEN) {
+      const expected = (process.env.META_VERIFY_TOKEN || '').trim()
+      if (mode === 'subscribe' && token && expected && token === expected) {
         return new NextResponse(challenge, { status: 200, headers: { 'Content-Type': 'text/plain' } })
       }
-      console.warn('Meta webhook GET verification failed', { mode, token_provided: !!token })
+      console.warn('Meta webhook GET verification failed', {
+        mode,
+        token_from_meta: token || '(missing)',
+        env_token_set: !!expected,
+        env_token_length: expected.length,
+        token_matches: !!(token && expected && token === expected),
+      })
       return new NextResponse('forbidden', { status: 403 })
     }
     // POST = real event from Meta. Verify HMAC signature, log, then route Instagram comments → campaigns + DM.
@@ -847,8 +784,7 @@ async function handleRoute(request, { params }) {
       const rawBody = await request.text()
       const signature = request.headers.get('x-razorpay-signature')
       const eventId = request.headers.get('x-razorpay-event-id')
-      const verified = await verifyAndIdentifyRazorpayWebhook(db, rawBody, signature)
-      if (!verified.ok) {
+      if (!verifyRazorpaySubscriptionWebhook(rawBody, signature)) {
         console.warn('Razorpay webhook invalid signature')
         return handleCORS(NextResponse.json({ error: 'invalid_signature' }, { status: 401 }))
       }
@@ -904,36 +840,8 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json({ ok: true, handled: event }))
       }
 
-      // ---- ONE-TIME PAYMENT LINK EVENTS (legacy per-workspace in-DM flow) ----
-      if (event === 'payment_link.paid') {
-        const ent = payload.payload?.payment_link?.entity
-        const refId = ent?.reference_id || ''
-        const amountInr = (ent?.amount_paid || ent?.amount || 0) / 100
-        if (refId.startsWith('convo_')) {
-          const convoId = refId.slice('convo_'.length)
-          const convo = await db.collection('conversations').findOne({ id: convoId })
-          if (convo) {
-            await db.collection('leads').updateOne(
-              { id: convo.lead_id },
-              { $set: { stage: 'converted', score: 'hot', updated_at: new Date() }, $inc: { revenue: amountInr } }
-            )
-            await db.collection('campaigns').updateOne(
-              { id: convo.campaign_id },
-              { $inc: { 'stats.conversions': 1 } }
-            )
-            await db.collection('messages').insertOne({
-              id: uuidv4(),
-              conversation_id: convoId,
-              role: 'system',
-              text: `💰 Payment received: ₹${amountInr} (via Razorpay).`,
-              ts: new Date(),
-              meta: { razorpay_payment_link_id: ent.id },
-            })
-            await db.collection('conversations').updateOne({ id: convoId }, { $set: { last_message: `💰 Payment of ₹${amountInr} received`, updated_at: new Date() } })
-          }
-        }
-      }
-      return handleCORS(NextResponse.json({ ok: true }))
+      console.warn('[billing] Unhandled Razorpay webhook event:', event)
+      return handleCORS(NextResponse.json({ ok: true, ignored: event || null }))
     }
 
     // ============ AUTHENTICATED ENDPOINTS ============
@@ -945,15 +853,8 @@ async function handleRoute(request, { params }) {
     if (route === '/agent' && method === 'GET') {
       const a = await db.collection('agents').findOne({ workspace_id: WS })
       if (!a) return handleCORS(NextResponse.json({ error: 'no_agent' }, { status: 404 }))
-      const { _id, razorpay_key_secret_enc, razorpay_webhook_secret_enc, ...rest } = a
-      // Never return raw secrets - only masked previews + connected flag
-      const out = {
-        ...rest,
-        razorpay_connected: !!(a.razorpay_key_id && razorpay_key_secret_enc),
-        razorpay_key_id_masked: a.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
-        razorpay_webhook_configured: !!razorpay_webhook_secret_enc,
-      }
-      return handleCORS(NextResponse.json(out))
+      const { _id, ...rest } = a
+      return handleCORS(NextResponse.json(rest))
     }
     if (route === '/agent' && (method === 'POST' || method === 'PUT')) {
       const b = await request.json()
@@ -978,13 +879,9 @@ async function handleRoute(request, { params }) {
         await db.collection('users').updateOne({ id: user.id }, { $set: { business_name: b.business_name } })
       }
       const a = await db.collection('agents').findOne({ workspace_id: WS })
-      const { _id, razorpay_key_secret_enc, razorpay_webhook_secret_enc, ...rest } = a
-      return handleCORS(NextResponse.json({
-        ...rest,
-        razorpay_connected: !!(a.razorpay_key_id && razorpay_key_secret_enc),
-        razorpay_key_id_masked: a.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
-        razorpay_webhook_configured: !!razorpay_webhook_secret_enc,
-      }))
+      if (!a) return handleCORS(NextResponse.json({ error: 'no_agent' }, { status: 404 }))
+      const { _id, ...rest } = a
+      return handleCORS(NextResponse.json(rest))
     }
 
     // =================================================================
@@ -1148,91 +1045,6 @@ async function handleRoute(request, { params }) {
       }
     }
 
-    // =================================================================
-    // RAZORPAY - per-workspace (legacy / unused in current SaaS model)
-    // =================================================================
-    if (route === '/razorpay/status' && method === 'GET') {
-      const a = await db.collection('agents').findOne({ workspace_id: WS })
-      return handleCORS(NextResponse.json({
-        connected: !!(a?.razorpay_key_id && a?.razorpay_key_secret_enc),
-        key_id_masked: a?.razorpay_key_id ? maskSecret(a.razorpay_key_id) : '',
-        mode: a?.razorpay_mode || (a?.razorpay_key_id?.startsWith('rzp_live_') ? 'live' : 'test'),
-        webhook_configured: !!a?.razorpay_webhook_secret_enc,
-      }))
-    }
-    if (route === '/razorpay/connect' && method === 'POST') {
-      const b = await request.json().catch(() => ({}))
-      const keyId = (b.key_id || '').trim()
-      const keySecret = (b.key_secret || '').trim()
-      const webhookSecret = (b.webhook_secret || '').trim() // optional
-      if (!keyId || !keySecret) {
-        return handleCORS(NextResponse.json({ error: 'missing_keys' }, { status: 400 }))
-      }
-      if (!/^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId)) {
-        return handleCORS(NextResponse.json({ error: 'invalid_key_id_format' }, { status: 400 }))
-      }
-      // Best-effort verification: hit Razorpay's read-only endpoint to confirm
-      // the keys are valid. We distinguish three cases:
-      //   1. Probe succeeds (2xx)         -> verified=true
-      //   2. Razorpay rejects (401/403)   -> bad keys -> fail loudly
-      //   3. Network/TLS failure locally  -> can't tell; save anyway with verified=false
-      //      (common when a corporate proxy or antivirus intercepts TLS).
-      // The real payment-link creation happens later; bad keys will surface then.
-      let verified = false
-      let verifyWarning = null
-      try {
-        const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64')
-        const probe = await fetch('https://api.razorpay.com/v1/payments?count=1', {
-          headers: { Authorization: `Basic ${auth}` },
-        })
-        if (probe.status === 401 || probe.status === 403) {
-          const j = await probe.json().catch(() => ({}))
-          return handleCORS(NextResponse.json({
-            error: 'razorpay_auth_failed',
-            details: j?.error?.description || `Razorpay rejected these keys (HTTP ${probe.status}). Double-check that you copied them correctly.`,
-          }, { status: 400 }))
-        }
-        if (probe.ok) {
-          verified = true
-        } else {
-          verifyWarning = `Razorpay returned HTTP ${probe.status} during verification. Saved anyway.`
-        }
-      } catch (e) {
-        // Network/TLS failure -- save anyway, the real flow will catch real key errors.
-        verifyWarning = `Could not verify keys with Razorpay (likely a local network/TLS proxy): ${e.message}. Keys saved anyway; we will try them on the first real payment link.`
-        console.warn('[razorpay/connect] verify probe failed, saving without verification:', e.message)
-      }
-      const mode = keyId.startsWith('rzp_live_') ? 'live' : 'test'
-      const set = {
-        razorpay_key_id: keyId,
-        razorpay_key_secret_enc: encryptSecret(keySecret),
-        razorpay_mode: mode,
-        razorpay_connected_at: new Date(),
-        updated_at: new Date(),
-      }
-      if (webhookSecret) set.razorpay_webhook_secret_enc = encryptSecret(webhookSecret)
-      await db.collection('agents').updateOne(
-        { workspace_id: WS },
-        { $set: set, $setOnInsert: { id: uuidv4(), workspace_id: WS, created_at: new Date() } },
-        { upsert: true }
-      )
-      return handleCORS(NextResponse.json({
-        connected: true,
-        key_id_masked: maskSecret(keyId),
-        mode,
-        webhook_configured: !!webhookSecret,
-        verified,
-        warning: verifyWarning,
-      }))
-    }
-    if (route === '/razorpay/disconnect' && method === 'POST') {
-      await db.collection('agents').updateOne(
-        { workspace_id: WS },
-        { $unset: { razorpay_key_id: '', razorpay_key_secret_enc: '', razorpay_webhook_secret_enc: '', razorpay_mode: '', razorpay_connected_at: '' }, $set: { updated_at: new Date() } }
-      )
-      return handleCORS(NextResponse.json({ connected: false }))
-    }
-
     // ---- CAMPAIGNS ----
     if (route === '/campaigns' && method === 'GET') {
       const list = await db.collection('campaigns').find({ workspace_id: WS }).sort({ created_at: -1 }).toArray()
@@ -1340,33 +1152,10 @@ async function handleRoute(request, { params }) {
         parsed = parseJSON(aiText)
       } catch (e) { console.error('AI failed', e) }
 
-      // Process actions: payment links (REAL Razorpay)
-      const enrichedActions = []
-      for (const a of (parsed.actions || [])) {
-        if (a.type === 'share_payment_link' && a.amount) {
-          try {
-            const link = await createRazorpayLink({
-              db,
-              workspaceId: WS,
-              amount: Number(a.amount),
-              label: a.label || 'Service',
-              conversationId: convoId,
-              leadHandle: convo.handle,
-            })
-            enrichedActions.push({ ...a, link })
-          } catch (e) {
-            const reason = e.message === 'razorpay_not_configured'
-              ? 'Razorpay not connected. Go to Settings → Razorpay to add your keys.'
-              : 'Could not generate payment link.'
-            console.error('Razorpay link failed', e.message)
-            enrichedActions.push({ ...a, link_error: reason })
-          }
-        } else if (a.type === 'share_booking_link') {
-          enrichedActions.push({ ...a, url: agent?.booking_link })
-        } else {
-          enrichedActions.push(a)
-        }
-      }
+      const enrichedActions = (parsed.actions || []).map((a) => {
+        if (a.type === 'share_booking_link') return { ...a, url: agent?.booking_link }
+        return a
+      })
 
       const agentMsg = {
         id: uuidv4(),

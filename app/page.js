@@ -14,6 +14,7 @@ import {
   Rocket, Inbox, Users, BarChart3, Bot, Megaphone, Sparkles, Send, Plus, Trash2,
   CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, Copy, ExternalLink, Menu, X, Crown, Lock, Check
 } from 'lucide-react'
+import { PLANS, formatINR } from '@/lib/plans'
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -410,9 +411,9 @@ function UsageBar({ label, used = 0, total = 0 }) {
 
 function UpgradeModal({ billing, onClose }) {
   const plans = [
-    { id: 'pro', name: 'Pro', price: '₹999', tagline: 'For solo creators', features: ['10,000 DMs/month', 'AI auto-replies', '5 campaigns', 'Priority support'], highlight: false },
-    { id: 'growth', name: 'Growth', price: '₹3,999', tagline: 'For growing brands', features: ['50,000 DMs/month', 'AI + custom personas', 'Unlimited campaigns', 'Razorpay payment links', 'Phone support'], highlight: true },
-    { id: 'agency', name: 'Agency', price: '₹9,999', tagline: 'For agencies & teams', features: ['Unlimited DMs', 'Multi-workspace', 'White-label', 'Dedicated CSM'], highlight: false },
+    { id: 'pro', name: PLANS.pro.name, price: formatINR(PLANS.pro.price), tagline: 'For solo creators', features: ['10,000 DMs/month', 'AI auto-replies', '5 campaigns', 'Priority support'], highlight: false },
+    { id: 'growth', name: PLANS.growth.name, price: formatINR(PLANS.growth.price), tagline: 'For growing brands', features: ['50,000 DMs/month', 'AI + custom personas', 'Unlimited campaigns', 'Phone support'], highlight: true },
+    { id: 'agency', name: PLANS.agency.name, price: formatINR(PLANS.agency.price), tagline: 'For agencies & teams', features: ['Unlimited DMs', 'Multi-workspace', 'White-label', 'Dedicated CSM'], highlight: false },
   ]
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={onClose}>
@@ -631,7 +632,7 @@ function ConnectInstagramGate({ onConnect, configured }) {
                 'AI replies to every comment & DM 24/7',
                 'Real-time leads, conversions & revenue',
                 'Multiple campaigns per post — no limits',
-                'Razorpay payment links inside DMs',
+                'Booking links & UPI in DMs',
               ].map((f) => (
                 <li key={f} className="flex items-start gap-2 text-sm text-slate-700">
                   <Check className="w-4 h-4 text-emerald-500 flex-shrink-0 mt-0.5" /> {f}
@@ -1204,20 +1205,6 @@ function ActionChip({ a }) {
       </a>
     )
   }
-  if (a.type === 'share_payment_link') {
-    if (a.link?.short_url) {
-      return (
-        <a href={a.link.short_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 font-medium">
-          <IndianRupee className="w-3.5 h-3.5" /> Pay ₹{a.amount} • {a.label} <ExternalLink className="w-3 h-3" />
-        </a>
-      )
-    }
-    return (
-      <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-rose-50 border border-rose-200 text-rose-700">
-        <IndianRupee className="w-3.5 h-3.5" /> Payment link unavailable
-      </span>
-    )
-  }
   if (a.type === 'share_pricing') {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full bg-violet-50 border border-violet-200 text-violet-700">
@@ -1293,23 +1280,16 @@ function LeadsPage() {
 
 function SettingsPage({ user }) {
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
-  const webhookUrl = `${baseUrl}/api/webhooks/razorpay`
   const metaWebhookUrl = `${baseUrl}/api/webhooks/meta`
   const igRedirectUri = `${baseUrl}/api/auth/instagram/callback`
   const [igStatus, setIgStatus] = useState(null)
   const [igBusy, setIgBusy] = useState(false)
-  const [rzpStatus, setRzpStatus] = useState(null)
-  const [rzpBusy, setRzpBusy] = useState(false)
-  const [rzpForm, setRzpForm] = useState({ key_id: '', key_secret: '', webhook_secret: '' })
-  const [rzpFormOpen, setRzpFormOpen] = useState(false)
   const [billing, setBilling] = useState(null)
   const [billingBusy, setBillingBusy] = useState(false)
 
-  const reloadRzp = () => api('/razorpay/status').then(setRzpStatus).catch(() => setRzpStatus({ connected: false }))
   const reloadBilling = () => api('/billing/status').then(setBilling).catch(() => setBilling({ plan: 'free', status: 'inactive' }))
 
   useEffect(() => {
-    reloadRzp()
     reloadBilling()
     api('/instagram/status').then(setIgStatus).catch(() => setIgStatus({ configured: false, connected: false }))
     // Surface ?ig=connected / ?ig=error&reason=... query strings from the OAuth callback redirect.
@@ -1354,26 +1334,6 @@ function SettingsPage({ user }) {
     toast.success(`${label} copied!`)
   }
 
-  const connectRzp = async (e) => {
-    e?.preventDefault()
-    if (!rzpForm.key_id || !rzpForm.key_secret) return toast.error('Key ID and Key Secret are required.')
-    setRzpBusy(true)
-    try {
-      const r = await api('/razorpay/connect', { method: 'POST', body: JSON.stringify(rzpForm) })
-      setRzpStatus(r)
-      setRzpForm({ key_id: '', key_secret: '', webhook_secret: '' })
-      setRzpFormOpen(false)
-      if (r.warning) {
-        toast.message(`Razorpay saved (${r.mode} mode)`, { description: 'Could not verify online (your local network may be blocking it). Will verify on first real payment link.', duration: 8000 })
-      } else {
-        toast.success(`Razorpay connected (${r.mode} mode)`)
-      }
-    } catch (e) {
-      toast.error(e.message === 'razorpay_auth_failed' ? 'Razorpay rejected those keys. Double-check them.' : e.message === 'invalid_key_id_format' ? 'Key ID must start with rzp_test_ or rzp_live_' : `Connect failed: ${e.message}`)
-    } finally {
-      setRzpBusy(false)
-    }
-  }
   const cancelSubscription = async () => {
     if (!confirm('Cancel your subscription? You\'ll keep access until the end of your current billing period, then move to the Free plan.')) return
     setBillingBusy(true)
@@ -1388,17 +1348,6 @@ function SettingsPage({ user }) {
     }
   }
 
-  const disconnectRzp = async () => {
-    if (!confirm('Disconnect Razorpay? Payment links will stop working until you reconnect.')) return
-    setRzpBusy(true)
-    try {
-      await api('/razorpay/disconnect', { method: 'POST' })
-      await reloadRzp()
-      toast.success('Razorpay disconnected.')
-    } catch (e) {
-      toast.error('Disconnect failed.')
-    } finally { setRzpBusy(false) }
-  }
   return (
     <div className="p-4 sm:p-6 md:p-8 max-w-4xl">
       <PageHeader icon={Settings} title="Settings" subtitle="Account, integrations, and webhook configuration." />
@@ -1534,7 +1483,7 @@ function SettingsPage({ user }) {
                 <Input readOnly value={metaWebhookUrl} className="font-mono text-xs bg-white" />
                 <Button onClick={() => copy(metaWebhookUrl, 'Webhook URL')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
               </div>
-              <p className="mt-1 text-violet-700">For local dev, expose this via ngrok (<code>ngrok http 3000</code>) and paste the public HTTPS URL into both fields in Meta's dashboard.</p>
+              <p className="mt-1 text-violet-700">Production: register <code>https://replyrocket.site</code> URLs in Meta. Local dev: use a temporary HTTPS tunnel and paste those URLs instead.</p>
             </div>
           </div>
         </CardContent>
@@ -1544,11 +1493,6 @@ function SettingsPage({ user }) {
         <CardHeader><CardTitle className="text-base">Connected integrations</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           <IntegrationRow icon={Sparkles} label="Claude Sonnet 4.5 (AI Auto-Closer)" connected />
-          <IntegrationRow
-            icon={IndianRupee}
-            label={`Razorpay${rzpStatus?.connected ? ` (${rzpStatus.mode?.toUpperCase()} mode)` : ''}`}
-            connected={!!rzpStatus?.connected}
-          />
           <IntegrationRow
             icon={Instagram}
             label={`Instagram${igStatus?.connected ? ` (@${igStatus.ig_username})` : ''}`}
