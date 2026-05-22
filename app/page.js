@@ -12,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { toast } from 'sonner'
 import {
   Rocket, Inbox, Users, BarChart3, Bot, Megaphone, Sparkles, Send, Plus, Trash2,
-  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, Copy, ExternalLink, Menu, X, Crown, Lock, Check
+  CalendarDays, IndianRupee, MessageCircle, Heart, Hash, CheckCircle2, Flame, Snowflake, Zap, Instagram, Loader2, ArrowRight, LogOut, Settings, ExternalLink, Menu, X, Crown, Lock, Check
 } from 'lucide-react'
 import { PLANS, formatINR } from '@/lib/plans'
 
@@ -1279,9 +1279,6 @@ function LeadsPage() {
 }
 
 function SettingsPage({ user }) {
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
-  const metaWebhookUrl = `${baseUrl}/api/webhooks/meta`
-  const igRedirectUri = `${baseUrl}/api/auth/instagram/callback`
   const [igStatus, setIgStatus] = useState(null)
   const [igBusy, setIgBusy] = useState(false)
   const [billing, setBilling] = useState(null)
@@ -1329,11 +1326,6 @@ function SettingsPage({ user }) {
     }
   }
 
-  const copy = (text, label) => {
-    navigator.clipboard.writeText(text)
-    toast.success(`${label} copied!`)
-  }
-
   const cancelSubscription = async () => {
     if (!confirm('Cancel your subscription? You\'ll keep access until the end of your current billing period, then move to the Free plan.')) return
     setBillingBusy(true)
@@ -1350,7 +1342,7 @@ function SettingsPage({ user }) {
 
   return (
     <div className="p-4 sm:p-6 md:p-8 max-w-4xl">
-      <PageHeader icon={Settings} title="Settings" subtitle="Account, integrations, and webhook configuration." />
+      <PageHeader icon={Settings} title="Settings" subtitle="Account and integrations." />
 
       <Card className="border-violet-100 mb-4">
         <CardHeader><CardTitle className="text-base">Account</CardTitle></CardHeader>
@@ -1466,26 +1458,6 @@ function SettingsPage({ user }) {
               </Button>
             </div>
           )}
-
-          {/* META DEVELOPER DASHBOARD SETUP */}
-          <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 text-xs text-violet-900 space-y-2">
-            <div className="font-semibold uppercase tracking-wide text-[10px]">Paste these into your Meta Developer App Dashboard</div>
-            <div>
-              <div className="text-violet-700 mb-0.5">Valid OAuth redirect URI</div>
-              <div className="flex gap-2">
-                <Input readOnly value={igRedirectUri} className="font-mono text-xs bg-white" />
-                <Button onClick={() => copy(igRedirectUri, 'Redirect URI')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
-              </div>
-            </div>
-            <div>
-              <div className="text-violet-700 mb-0.5">Webhook callback URL</div>
-              <div className="flex gap-2">
-                <Input readOnly value={metaWebhookUrl} className="font-mono text-xs bg-white" />
-                <Button onClick={() => copy(metaWebhookUrl, 'Webhook URL')} variant="outline" size="icon"><Copy className="w-4 h-4" /></Button>
-              </div>
-              <p className="mt-1 text-violet-700">Production: register <code>https://replyrocket.site</code> URLs in Meta. Local dev: use a temporary HTTPS tunnel and paste those URLs instead.</p>
-            </div>
-          </div>
         </CardContent>
       </Card>
 
