@@ -1,0 +1,37 @@
+# ReplyRocket + MongoDB on one host.
+#
+# 1. cp .env.example .env   → fill secrets (JWT_SECRET, NEXT_PUBLIC_BASE_URL, Meta/Razorpay, etc.)
+# 2. docker compose build --build-arg NEXT_PUBLIC_BASE_URL=https://replyrocket.site
+#    or set NEXT_PUBLIC_BASE_URL in .env and use compose interpolation below.
+# 3. docker compose up -d
+#
+# `environment.MONGO_URL` overrides .env so the app hits the compose MongoDB service.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL:-http://localhost:3000}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      NODE_ENV: production
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:

@@ -12,7 +12,7 @@ import {
   fetchUserProfile,
   verifyMetaWebhookSignature,
   parseSignedRequest,
-  sendDirectMessage,
+  sendPrivateReplyToComment,
 } from '@/lib/instagram'
 import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
 import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
@@ -409,9 +409,9 @@ async function processInstagramCommentWebhookEvent(db, evt) {
   })
 
   try {
-    await sendDirectMessage({
+    await sendPrivateReplyToComment({
       accessToken: acct.access_token,
-      recipientIgsid: commenterIgsid,
+      commentId,
       text: dmText,
     })
     await db.collection('messages').updateMany(
@@ -420,7 +420,7 @@ async function processInstagramCommentWebhookEvent(db, evt) {
     )
     return { ok: true, conversation_id: convoId, campaign_id: camp.id }
   } catch (e) {
-    console.error('Instagram sendDirectMessage failed:', e)
+    console.error('Instagram sendPrivateReplyToComment failed:', e)
     await db.collection('messages').updateMany(
       { conversation_id: convoId, role: 'agent', 'meta.is_initial_dm': true },
       {
