@@ -13,6 +13,7 @@ import {
   verifyMetaWebhookSignature,
   parseSignedRequest,
   sendPrivateReplyToComment,
+  enableInstagramWebhookSubscriptions,
 } from '@/lib/instagram'
 import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
 import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
@@ -660,6 +661,12 @@ async function handleRoute(request, { params }) {
           },
           { upsert: true }
         )
+        try {
+          await enableInstagramWebhookSubscriptions({ accessToken: long.access_token })
+          console.log('IG webhook subscriptions enabled (comments)')
+        } catch (subErr) {
+          console.error('IG enableInstagramWebhookSubscriptions failed:', subErr)
+        }
         return redirectWithStatus('connected')
       } catch (e) {
         console.error('IG OAuth callback failed:', e)
@@ -1275,6 +1282,23 @@ async function handleRoute(request, { params }) {
     if (route === '/instagram/disconnect' && method === 'POST') {
       await db.collection('instagram_accounts').deleteOne({ workspace_id: WS })
       return handleCORS(NextResponse.json({ ok: true }))
+    }
+
+    if (route === '/instagram/enable-webhooks' && method === 'POST') {
+      const acct = await db.collection('instagram_accounts').findOne({ workspace_id: WS })
+      if (!acct?.access_token) {
+        return handleCORS(NextResponse.json({ error: 'not_connected' }, { status: 400 }))
+      }
+      try {
+        const r = await enableInstagramWebhookSubscriptions({ accessToken: acct.access_token })
+        return handleCORS(NextResponse.json({ ok: true, result: r }))
+      } catch (e) {
+        console.error('enable-webhooks:', e)
+        return handleCORS(NextResponse.json({
+          error: 'subscribe_failed',
+          detail: String(e?.message || e).slice(0, 500),
+        }, { status: 502 }))
+      }
     }
 
     return handleCORS(NextResponse.json({ error: `Route ${route} not found` }, { status: 404 }))
