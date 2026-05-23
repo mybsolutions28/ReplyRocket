@@ -1329,6 +1329,20 @@ function SettingsPage({ user }) {
     }
   }
 
+  const runIgMessagesProbe = async () => {
+    setIgBusy(true)
+    try {
+      const r = await api('/instagram/probe-messages', { method: 'POST' })
+      toast.success(
+        `Messages API OK (${r.conversation_count ?? 0} conversations). Meta Testing may take 24h.`,
+      )
+    } catch (e) {
+      toast.error(e.message || 'Messages API check failed')
+    } finally {
+      setIgBusy(false)
+    }
+  }
+
   const disconnectIG = async () => {
     setIgBusy(true)
     try {
@@ -1458,7 +1472,10 @@ function SettingsPage({ user }) {
                   <div className="text-xs text-slate-500">{igStatus.account_type || 'Instagram'} · token expires {igStatus.token_expires_at ? new Date(igStatus.token_expires_at).toLocaleDateString() : 'unknown'}</div>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <Button variant="outline" size="sm" disabled={igBusy} onClick={runIgMessagesProbe}>
+                  {igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Meta messages test'}
+                </Button>
                 <Button variant="outline" size="sm" disabled={igBusy} onClick={runIgCommentsProbe}>
                   {igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Meta comments test'}
                 </Button>

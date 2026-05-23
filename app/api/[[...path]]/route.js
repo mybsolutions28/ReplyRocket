@@ -15,6 +15,7 @@ import {
   sendPrivateReplyToComment,
   enableInstagramWebhookSubscriptions,
   probeCommentsApiForAppReview,
+  probeMessagesApiForAppReview,
 } from '@/lib/instagram'
 import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
 import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
@@ -1319,6 +1320,24 @@ async function handleRoute(request, { params }) {
         return handleCORS(NextResponse.json(result))
       } catch (e) {
         console.error('probe-comments:', e)
+        return handleCORS(NextResponse.json({
+          error: 'probe_failed',
+          detail: String(e?.message || e).slice(0, 500),
+        }, { status: 502 }))
+      }
+    }
+
+    if (route === '/instagram/probe-messages' && method === 'POST') {
+      const acct = await db.collection('instagram_accounts').findOne({ workspace_id: WS })
+      if (!acct?.access_token) {
+        return handleCORS(NextResponse.json({ error: 'not_connected' }, { status: 400 }))
+      }
+      try {
+        const result = await probeMessagesApiForAppReview({ accessToken: acct.access_token })
+        console.log('IG probe-messages (manual):', result)
+        return handleCORS(NextResponse.json(result))
+      } catch (e) {
+        console.error('probe-messages:', e)
         return handleCORS(NextResponse.json({
           error: 'probe_failed',
           detail: String(e?.message || e).slice(0, 500),
