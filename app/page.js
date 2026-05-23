@@ -1312,6 +1312,22 @@ function SettingsPage({ user }) {
     setIgBusy(true)
     window.location.href = '/api/instagram/connect'
   }
+  const runIgCommentsProbe = async () => {
+    setIgBusy(true)
+    try {
+      const r = await api('/instagram/probe-comments', { method: 'POST' })
+      if (r.skipped === 'no_media') {
+        toast.message(r.message || 'Post on Instagram first, then try again.')
+      } else {
+        toast.success(`Comments API OK (${r.comment_count ?? 0} on latest post). Check Meta Testing in ~24h.`)
+      }
+    } catch (e) {
+      toast.error(e.message || 'Comments API check failed')
+    } finally {
+      setIgBusy(false)
+    }
+  }
+
   const disconnectIG = async () => {
     setIgBusy(true)
     try {
@@ -1441,7 +1457,12 @@ function SettingsPage({ user }) {
                   <div className="text-xs text-slate-500">{igStatus.account_type || 'Instagram'} · token expires {igStatus.token_expires_at ? new Date(igStatus.token_expires_at).toLocaleDateString() : 'unknown'}</div>
                 </div>
               </div>
-              <Button variant="outline" disabled={igBusy} onClick={disconnectIG}>{igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Disconnect'}</Button>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" disabled={igBusy} onClick={runIgCommentsProbe}>
+                  {igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Meta comments test'}
+                </Button>
+                <Button variant="outline" disabled={igBusy} onClick={disconnectIG}>{igBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Disconnect'}</Button>
+              </div>
             </div>
           ) : (
             <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">

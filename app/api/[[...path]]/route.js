@@ -14,6 +14,7 @@ import {
   parseSignedRequest,
   sendPrivateReplyToComment,
   enableInstagramWebhookSubscriptions,
+  probeCommentsApiForAppReview,
 } from '@/lib/instagram'
 import { PLANS, getPlan, getRazorpayPlanId, DEFAULT_PLAN, SUBSCRIPTION_STATES } from '@/lib/plans'
 import { createCommentTriggeredConversation } from '@/lib/campaign-trigger'
@@ -667,6 +668,12 @@ async function handleRoute(request, { params }) {
         } catch (subErr) {
           console.error('IG enableInstagramWebhookSubscriptions failed:', subErr)
         }
+        try {
+          const probe = await probeCommentsApiForAppReview({ accessToken: long.access_token })
+          console.log('IG App Review comments API probe:', probe)
+        } catch (probeErr) {
+          console.error('IG probeCommentsApiForAppReview failed:', probeErr)
+        }
         return redirectWithStatus('connected')
       } catch (e) {
         console.error('IG OAuth callback failed:', e)
@@ -1296,6 +1303,24 @@ async function handleRoute(request, { params }) {
         console.error('enable-webhooks:', e)
         return handleCORS(NextResponse.json({
           error: 'subscribe_failed',
+          detail: String(e?.message || e).slice(0, 500),
+        }, { status: 502 }))
+      }
+    }
+
+    if (route === '/instagram/probe-comments' && method === 'POST') {
+      const acct = await db.collection('instagram_accounts').findOne({ workspace_id: WS })
+      if (!acct?.access_token) {
+        return handleCORS(NextResponse.json({ error: 'not_connected' }, { status: 400 }))
+      }
+      try {
+        const result = await probeCommentsApiForAppReview({ accessToken: acct.access_token })
+        console.log('IG probe-comments (manual):', result)
+        return handleCORS(NextResponse.json(result))
+      } catch (e) {
+        console.error('probe-comments:', e)
+        return handleCORS(NextResponse.json({
+          error: 'probe_failed',
           detail: String(e?.message || e).slice(0, 500),
         }, { status: 502 }))
       }
