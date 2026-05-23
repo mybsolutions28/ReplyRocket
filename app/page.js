@@ -1319,7 +1319,8 @@ function SettingsPage({ user }) {
       if (r.skipped === 'no_media') {
         toast.message(r.message || 'Post on Instagram first, then try again.')
       } else {
-        toast.success(`Comments API OK (${r.comment_count ?? 0} on latest post). Check Meta Testing in ~24h.`)
+        const action = r.write_action?.type === 'reply' ? 'Posted test reply' : 'Posted test comment'
+        toast.success(`${action} on your latest post. Delete it on IG. Meta Testing may take 24h.`)
       }
     } catch (e) {
       toast.error(e.message || 'Comments API check failed')
